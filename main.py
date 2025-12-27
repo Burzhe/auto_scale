@@ -143,9 +143,86 @@ def _find_column_index(header_row: List[str], keywords: List[str]) -> Optional[i
     return None
 
 
-def _parse_corpus_rows(df: pd.DataFrame) -> List[ParsedRow]:
+def _parse_corpus_rows_by_header(df: pd.DataFrame) -> List[ParsedRow]:
+    """Парсит корпусные детали по явной строке заголовка."""
+    rows: List[ParsedRow] = []
+    start_row: Optional[int] = None
+    header_row = None
+
+    for r in range(df.shape[0]):
+        row_str = " ".join(df.iloc[r].astype(str).str.lower())
+        if (
+            ("тлщн" in row_str or "толщ" in row_str)
+            and "длина" in row_str
+            and ("кол-во" in row_str or "кол " in row_str or "колич" in row_str)
+        ):
+            start_row = r + 1
+            header_row = df.iloc[r]
+            logger.info(f"Найдена строка заголовков корпуса на позиции {r}: {row_str[:80]}")
+            break
+
+    if start_row is None or header_row is None:
+        return rows
+
+    header = header_row.astype(str).str.lower().tolist()
+    name_idx = next((i for i, h in enumerate(header) if "наимен" in h or "детал" in h or "плита" in h or h == ""), 0)
+    thick_idx = next((i for i, h in enumerate(header) if "тлщн" in h or "толщ" in h), None)
+    length_idx = next((i for i, h in enumerate(header) if "длина" in h), None)
+    width_idx = next((i for i, h in enumerate(header) if "ширина" in h), None)
+    qty_idx = next((i for i, h in enumerate(header) if "кол-во" in h or "кол" in h), None)
+
+    for r in range(start_row, df.shape[0]):
+        row = df.iloc[r]
+        name = str(row.iloc[name_idx]).strip() if name_idx < len(row) else ""
+        if not name or name.lower() in ["nan", "итого", "пластик", "ткань", "фурнитура"] or pd.isna(name):
+            continue
+
+        thickness_mm = None
+        length_mm = None
+        width_mm = None
+        qty = None
+
+        if thick_idx is not None and thick_idx < len(row):
+            thick_val = str(row.iloc[thick_idx])
+            m = re.search(r"\d+", thick_val)
+            if m:
+                thickness_mm = int(m.group(0))
+
+        if length_idx is not None and pd.notna(row.iloc[length_idx]):
+            try:
+                length_mm = int(float(row.iloc[length_idx]))
+            except Exception:
+                pass
+
+        if width_idx is not None and pd.notna(row.iloc[width_idx]):
+            try:
+                width_mm = int(float(row.iloc[width_idx]))
+            except Exception:
+                pass
+
+        if qty_idx is not None and pd.notna(row.iloc[qty_idx]):
+            try:
+                qty = float(row.iloc[qty_idx])
+            except Exception:
+                pass
+
+        if thickness_mm and length_mm and width_mm and qty:
+            rows.append(
+                ParsedRow(
+                    name=name,
+                    thickness_mm=thickness_mm,
+                    length_mm=length_mm,
+                    width_mm=width_mm,
+                    qty=qty,
+                )
+            )
+
+    return rows
+
+
+def _parse_corpus_rows_heuristic(df: pd.DataFrame) -> List[ParsedRow]:
     """
-    Парсит корпусные детали из таблицы
+    Парсит корпусные детали из таблицы.
     Улучшенная версия: ищет строку с "Тлщн" или "Толщ" как начало таблицы
     """
     # ДИАГНОСТИКА: выводим первые 20 строк для понимания структуры
@@ -300,6 +377,16 @@ def _parse_corpus_rows(df: pd.DataFrame) -> List[ParsedRow]:
 
     logger.info(f"Всего распознано деталей: {len(rows)}")
     return rows
+
+
+def _parse_corpus_rows(df: pd.DataFrame) -> List[ParsedRow]:
+    rows = _parse_corpus_rows_by_header(df)
+    if rows:
+        logger.info(f"Парсинг по заголовку собрал {len(rows)} деталей")
+        return rows
+
+    logger.info("Парсинг по заголовку не сработал, пробуем эвристику")
+    return _parse_corpus_rows_heuristic(df)
 
 
 def _parse_furniture_rows(df: pd.DataFrame) -> List[FurnitureItem]:
