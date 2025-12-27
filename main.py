@@ -410,7 +410,14 @@ def _parse_furniture_rows(df: pd.DataFrame) -> List[FurnitureItem]:
     for r in range(start_row, df.shape[0]):
         row = df.iloc[r]
         name = str(row.iloc[name_idx]).strip() if name_idx < len(row) else ""
-        if not name or name.lower() in ['итого', 'рублевая', 'валютная', 'затраты', 'составляющая'] or pd.isna(name):
+        if (
+            not name
+            or name.lower() in ['итого', 'рублевая', 'валютная', 'затраты', 'составляющая']
+            or pd.isna(name)
+            or 'рублев' in name.lower()
+            or 'валютн' in name.lower()
+            or 'затрат' in name.lower()
+        ):
             continue
 
         code = str(row.iloc[code_idx]).strip() if code_idx is not None and code_idx < len(row) else None
@@ -587,122 +594,86 @@ def _calc_spans_for_section(section_w: int) -> int:
 
 
 def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], float]:
-    """
-    Пересчитывает корпус по новой ширине
-    Использует умную логику для разных типов деталей
-    """
     old_width = spec.width_total_mm
-    ratio = new_width / old_width
-    
-    new_sections_list = _split_sections(new_width)
-    old_sections = spec.sections_count
-    
-    # Считаем количество пролётов (spans)
-    old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(old_sections))
-    new_spans = sum(_calc_spans_for_section(w) for w in new_sections_list)
-    
+    new_sections = _split_sections(new_width)
+    new_sections_count = len(new_sections)
+
+    old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
+    new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
-    section_ratio = len(new_sections_list) / old_sections if old_sections > 0 else 1
-    
-    logger.info(f"Пересчёт: старые секции={old_sections}, новые={len(new_sections_list)}, "
-                f"старые пролёты={old_spans}, новые={new_spans}")
-    
+
     new_parts = []
-    new_weight = 0.0
-    
     for row in spec.corpus_rows:
-        if not row.qty or row.qty == 0:
-            continue
-        
+        name_low = row.name.lower()
         new_qty = row.qty
         new_length = row.length_mm
-        new_width_dim = row.width_mm
-        name_lower = row.name.lower()
-        
-        # Логика пересчёта в зависимости от типа детали
-        if "фасад" in name_lower:
-            # Фасады зависят от пролётов
-            new_qty = row.qty * span_ratio
-            if new_spans > 0:
-                new_width_dim = new_width // new_spans
-        
-        elif "полк" in name_lower:
-            # Полки тоже зависят от пролётов
-            new_qty = row.qty * span_ratio
-            if new_spans > 0:
-                new_width_dim = new_width // new_spans
-        
-        elif "задн" in name_lower:
-            # Задние стенки по секциям
-            new_qty = len(new_sections_list)
-            if len(new_sections_list) > 0:
-                new_width_dim = new_sections_list[0]  # примерно
-        
-        elif "крышк" in name_lower or "дно" in name_lower:
-            # Крышки/днища обычно общие или по секциям
-            if row.length_mm and row.length_mm > 1500:  # если это общая крышка
-                new_qty = row.qty
-                new_length = new_width
-            else:
-                new_qty = row.qty * section_ratio
-                new_length = new_width // len(new_sections_list) if len(new_sections_list) > 0 else new_width
-        
-        elif any(kw in name_lower for kw in ["боков", "стенк", "перегор"]):
-            # Боковые стенки и перегородки масштабируются по секциям
-            new_qty = row.qty * section_ratio
-        
-        elif "цокол" in name_lower:
-            # Цоколь по секциям
-            new_qty = row.qty * section_ratio
-            new_length = new_width // len(new_sections_list) if len(new_sections_list) > 0 else new_width
-        
+        new_width_part = row.width_mm
+
+        if 'полк' in name_low:
+            new_qty *= span_ratio
+            new_width_part = new_width // new_spans  # Обновляем размер полки по пролёту
+        elif 'фасад' in name_low:
+            new_qty *= span_ratio
+            new_width_part = new_width // new_spans  # Фасад по пролёту
+        elif 'задн' in name_low:
+            new_qty = new_sections_count
+            new_width_part = new_width // new_sections_count
+        elif 'крышк' in name_low or 'дно' in name_low:
+            new_qty = new_sections_count * 2  # По 2 на секцию? Уточните из оригинала
+            new_length = new_width // new_sections_count  # Если крышка по ширине секции
+        elif 'боков' in name_low or 'средние' in name_low or 'стенк' in name_low:
+            new_qty = new_sections_count + 1  # Боковины + средние
+        elif 'цоколь' in name_low:
+            new_qty = new_sections_count
+            new_length = new_width // new_sections_count
         else:
-            # Остальные детали масштабируем линейно
-            new_qty = row.qty * ratio
-        
-        new_qty = round(new_qty, 1)
-        
+            new_qty *= (new_width / old_width)
+
         new_parts.append({
-            "name": row.name,
-            "thickness": row.thickness_mm,
-            "size": f"{new_length}×{new_width_dim}" if new_length and new_width_dim else "—",
-            "qty": new_qty,
-            "material": row.material
+            'name': row.name,
+            'thickness': row.thickness_mm,
+            'length_mm': new_length,
+            'width_mm': new_width_part,
+            'qty': math.ceil(new_qty),  # Округление в большую сторону для производства
+            'size': f"{new_length}×{new_width_part}"
         })
-        
-        # Рассчитываем вес
-        if row.thickness_mm and new_length and new_width_dim and new_qty:
-            volume_m3 = (new_length / 1000) * (new_width_dim / 1000) * (row.thickness_mm / 1000)
-            weight_kg = volume_m3 * MATERIAL_DENSITY * new_qty
-            new_weight += weight_kg
-    
+
+    # Точный вес по объёму (учтёт все материалы)
+    new_weight = 0.0
+    for p in new_parts:
+        vol_m3 = (p['length_mm'] / 1000) * (p['width_mm'] / 1000) * (p['thickness'] / 1000) * p['qty']
+        new_weight += vol_m3 * MATERIAL_DENSITY  # 750 кг/м³ — можно варьировать по материалу, если добавить в ParsedRow
+
+    # Оценка веса фурнитуры (если нужно точно — добавьте вес на позицию в FurnitureItem)
+    furn_weight = sum(p['qty'] * 0.05 for p in _recalculate_furniture(spec, new_width))  # ~50 г на шт
+    new_weight += furn_weight
+
     return new_parts, round(new_weight, 2)
 
 
 def _petals_per_facade(height_mm: int) -> int:
-    """Стандартный расчёт петель Blum/Hettich по высоте фасада"""
-    if height_mm <= 900:
-        return 2
-    elif height_mm <= 1400:
-        return 3
-    elif height_mm <= 1900:
-        return 4
-    elif height_mm <= 2400:
-        return 5
-    elif height_mm <= 2800:
-        return 7  # как в твоём примере 2700 мм → 7 петель
-    else:
-        return 8
+    if height_mm <= 900: return 2
+    elif height_mm <= 1400: return 3
+    elif height_mm <= 1900: return 4
+    elif height_mm <= 2400: return 5
+    elif height_mm <= 2800: return 7
+    else: return 8
 
 
-def _recalculate_furniture(spec: ParsedSpec, new_width: int, new_spans: int, old_spans: int, new_facades: int) -> List[dict]:
+def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> List[dict]:
+    old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
+    new_sections = _split_sections(new_width)
+    new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
-    new_sections = len(_split_sections(new_width))
+    section_ratio = len(new_sections) / spec.sections_count if spec.sections_count > 0 else 1
 
-    # Находим высоту фасада из оригинала
+    # Фасады из корпуса
+    old_facades = next((r.qty for r in spec.corpus_rows if 'фасад' in r.name.lower()), old_spans)
+    new_facades = old_facades * span_ratio
+
+    # Высота фасада
     facade_row = next((r for r in spec.corpus_rows if 'фасад' in r.name.lower()), None)
     facade_height = facade_row.length_mm if facade_row else 2700
-
     petals_per_f = _petals_per_facade(facade_height)
 
     new_furn = []
@@ -711,22 +682,28 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int, new_spans: int, old
         new_qty = item.qty or 0
 
         if 'петл' in name_low or 'чашк' in name_low or 'заглушка' in name_low and 'петл' in name_low:
-            new_qty = new_facades * petals_per_f  # точно по правилу
+            new_qty = new_facades * petals_per_f
         elif 'ручк' in name_low:
             new_qty = new_facades  # 1 на фасад
         elif 'полкодерж' in name_low:
             new_qty *= span_ratio
         elif 'стяжка межсекцион' in name_low:
-            new_qty = max(0, new_sections - 1) * 3  # пример: 3 стяжки на связь (уточни если иначе)
+            new_qty = (len(new_sections) - 1) * (item.qty / (spec.sections_count - 1)) if spec.sections_count > 1 else 0
         elif 'корректор фасада' in name_low:
             new_qty = new_facades
+        elif 'винт' in name_low or 'ключ' in name_low:
+            new_qty = math.ceil(item.qty * section_ratio)  # По секциям, фиксировано
+        elif 'штанг' in name_low:  # Для штанг
+            new_qty = len(new_sections)  # По секциям (если штанга на секцию)
+        elif 'подсветк' in name_low:  # Для подсветки
+            new_qty *= span_ratio  # По пролётам
         else:
-            new_qty *= span_ratio  # остальное по пролётам
+            new_qty *= span_ratio  # Остальное по пролётам
 
         new_furn.append({
             'name': item.name,
             'code': item.code,
-            'qty': round(new_qty, 1),
+            'qty': math.ceil(new_qty),  # Всегда целое, в большую сторону
             'unit': item.unit or 'шт'
         })
 
@@ -862,7 +839,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         new_spans = sum(_calc_spans_for_section(w) for w in sections)
         new_facades = new_spans
 
-        furniture_items = _recalculate_furniture(spec, new_width, new_spans, old_spans, new_facades)
+        furniture_items = _recalculate_furniture(spec, new_width)
 
         # Формируем ответ
         msg = "✅ Пересчёт завершён!\n\n"
