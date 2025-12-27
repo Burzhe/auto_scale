@@ -605,9 +605,9 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     new_parts = []
     for row in spec.corpus_rows:
         name_low = row.name.lower()
-        new_qty = row.qty
-        new_length = row.length_mm
-        new_width_part = row.width_mm
+        new_qty = row.qty or 0
+        new_length = row.length_mm or 0
+        new_width_part = row.width_mm or 0
 
         if 'полк' in name_low:
             new_qty *= span_ratio
@@ -627,7 +627,7 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             new_qty = new_sections_count
             new_length = new_width // new_sections_count
         else:
-            new_qty *= (new_width / old_width)
+            new_qty *= (new_width / old_width if old_width else 1)
 
         new_parts.append({
             'name': row.name,
@@ -641,6 +641,8 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     # Точный вес по объёму (учтёт все материалы)
     new_weight = 0.0
     for p in new_parts:
+        if not p['length_mm'] or not p['width_mm'] or not p['thickness']:
+            continue
         vol_m3 = (p['length_mm'] / 1000) * (p['width_mm'] / 1000) * (p['thickness'] / 1000) * p['qty']
         new_weight += vol_m3 * MATERIAL_DENSITY  # 750 кг/м³ — можно варьировать по материалу, если добавить в ParsedRow
 
@@ -668,31 +670,32 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> List[dict]:
     section_ratio = len(new_sections) / spec.sections_count if spec.sections_count > 0 else 1
 
     # Фасады из корпуса
-    old_facades = next((r.qty for r in spec.corpus_rows if 'фасад' in r.name.lower()), old_spans)
+    facade_row = next((r for r in spec.corpus_rows if 'фасад' in r.name.lower()), None)
+    old_facades = facade_row.qty if facade_row and facade_row.qty is not None else old_spans
     new_facades = old_facades * span_ratio
 
     # Высота фасада
-    facade_row = next((r for r in spec.corpus_rows if 'фасад' in r.name.lower()), None)
-    facade_height = facade_row.length_mm if facade_row else 2700
+    facade_height = facade_row.length_mm if facade_row and facade_row.length_mm else 2700
     petals_per_f = _petals_per_facade(facade_height)
 
     new_furn = []
     for item in spec.furniture_items:
         name_low = item.name.lower()
-        new_qty = item.qty or 0
+        base_qty = item.qty or 0
+        new_qty = base_qty
 
-        if 'петл' in name_low or 'чашк' in name_low or 'заглушка' in name_low and 'петл' in name_low:
+        if 'петл' in name_low or 'чашк' in name_low or ('заглушка' in name_low and 'петл' in name_low):
             new_qty = new_facades * petals_per_f
         elif 'ручк' in name_low:
             new_qty = new_facades  # 1 на фасад
         elif 'полкодерж' in name_low:
             new_qty *= span_ratio
         elif 'стяжка межсекцион' in name_low:
-            new_qty = (len(new_sections) - 1) * (item.qty / (spec.sections_count - 1)) if spec.sections_count > 1 else 0
+            new_qty = (len(new_sections) - 1) * (base_qty / (spec.sections_count - 1)) if spec.sections_count > 1 else 0
         elif 'корректор фасада' in name_low:
             new_qty = new_facades
         elif 'винт' in name_low or 'ключ' in name_low:
-            new_qty = math.ceil(item.qty * section_ratio)  # По секциям, фиксировано
+            new_qty = math.ceil(base_qty * section_ratio)  # По секциям, фиксировано
         elif 'штанг' in name_low:  # Для штанг
             new_qty = len(new_sections)  # По секциям (если штанга на секцию)
         elif 'подсветк' in name_low:  # Для подсветки
