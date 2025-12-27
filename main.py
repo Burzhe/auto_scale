@@ -403,10 +403,15 @@ def _parse_corpus_rows(df: pd.DataFrame) -> List[ParsedRow]:
     rows = _parse_corpus_rows_by_header(df)
     if rows:
         logger.info(f"Парсинг по заголовку собрал {len(rows)} деталей")
-        return rows
+    else:
+        logger.info("Парсинг по заголовку не сработал, пробуем эвристику")
+        rows = _parse_corpus_rows_heuristic(df)
 
-    logger.info("Парсинг по заголовку не сработал, пробуем эвристику")
-    return _parse_corpus_rows_heuristic(df)
+    for r in rows:
+        if r.name and "фанера" in r.name.lower() and not r.material:
+            r.material = "фанера"
+
+    return rows
 
 
 def _parse_furniture_rows(df: pd.DataFrame) -> List[FurnitureItem]:
@@ -620,7 +625,7 @@ def _calc_spans_for_section(section_w: int) -> int:
     return spans
 
 
-def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], float, List[str]]:
+def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], float, List[str], List[dict]]:
     old_width = spec.width_total_mm
     new_sections = _split_sections(new_width)
     new_sections_count = len(new_sections)
@@ -628,9 +633,10 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
     new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
+    section_ratio = new_sections_count / spec.sections_count if spec.sections_count else 1
 
     old_polki = next((r.qty for r in spec.corpus_rows if 'полк' in r.name.lower()), 0) or 0
-    polki_per_span = old_polki / old_spans if old_spans > 0 else 6  # Пример 6 на пролёт
+    polki_per_span = math.ceil(old_polki / old_spans) if old_spans > 0 else 6
 
     new_parts = []
     for row in spec.corpus_rows:
@@ -649,7 +655,7 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             new_qty = new_sections_count
             new_width_part = new_width // new_sections_count if new_sections_count else new_width_part
         elif 'крышк' in name_low or 'дно' in name_low:
-            new_qty = new_sections_count * 2  # Уточни из оригинала, если не 2 на секцию
+            new_qty = new_sections_count * 2
             new_length = new_width // new_sections_count if new_sections_count else new_length
         elif 'боков' in name_low or 'средние' in name_low or 'стенк' in name_low:
             new_qty = new_sections_count + 1
@@ -657,7 +663,7 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             new_qty = new_sections_count
             new_length = new_width // new_sections_count if new_sections_count else new_length
         else:
-            new_qty *= (new_width / old_width) if old_width else 1
+            new_qty *= (new_width / old_width) if old_width else section_ratio
 
         new_parts.append({
             'name': row.name,
@@ -669,32 +675,42 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             'size': f"{new_length}×{new_width_part}"
         })
 
-    # Объёмный вес (учтёт все материалы)
+    logger.debug(new_parts)
+
     new_weight = 0.0
     for p in new_parts:
         if p['thickness'] and p['length_mm'] and p['width_mm'] and p['qty']:
+            length_adj = p['length_mm'] + 2
+            width_adj = p['width_mm'] + 2
             material_hint = f"{p['name']} {p.get('material') or ''}".lower()
             if 'фанер' in material_hint:
                 density = 600
             elif 'мдф' in material_hint:
                 density = 800
             else:
-                density = 750
-            vol_m3 = (p['length_mm'] / 1000) * (p['width_mm'] / 1000) * (p['thickness'] / 1000) * p['qty']
+                density = MATERIAL_DENSITY
+            vol_m3 = (length_adj / 1000) * (width_adj / 1000) * (p['thickness'] / 1000) * p['qty']
             new_weight += vol_m3 * density
 
-    # Оценка веса фурнитуры (+0.05 кг/шт средне)
-    furn_items = _recalculate_furniture(spec, new_width)
+    furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
     furn_weight = sum(f['qty'] * 0.05 for f in furn_items)
-    new_weight += furn_weight
+    new_weight = (new_weight + furn_weight) * 1.2
 
     warnings = []
     for p in new_parts:
-        max_sheet = 2070 if 'лдсп' in p['name'].lower() else 1220 if 'фанера' in p['name'].lower() else 2070
-        if max(p['length_mm'], p['width_mm']) > max_sheet:
-            warnings.append(f"⚠️ {p['name']} > {max_sheet} мм — требуется деление + вставка")
+        dim1 = p['length_mm']
+        dim2 = p['width_mm']
+        max_sheet_long = 2800 if 'лдсп' in p['name'].lower() else 2440 if 'фанера' in p['name'].lower() else 2800
+        max_sheet_short = 2070 if 'лдсп' in p['name'].lower() else 1220 if 'фанера' in p['name'].lower() else 2070
+        if max(dim1, dim2) > max_sheet_long or min(dim1, dim2) > max_sheet_short:
+            warnings.append(f"⚠️ {p['name']} ({dim1}×{dim2}) > листа ({max_sheet_long}×{max_sheet_short}) — требуется деление + вставка")
 
-    return new_parts, round(new_weight, 2), warnings
+    if spec.height_mm > 2500:
+        warnings.append("⚠️ Устойчивость: добавить антиопрокидывание")
+
+    warnings.extend(furn_warnings)
+
+    return new_parts, round(new_weight, 2), warnings, furn_items
 
 
 def _petals_per_facade(height_mm: int) -> int:
@@ -706,44 +722,64 @@ def _petals_per_facade(height_mm: int) -> int:
     else: return 8
 
 
-def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> List[dict]:
+def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict], List[str], float]:
     old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
     new_sections = _split_sections(new_width)
     new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
     section_ratio = len(new_sections) / spec.sections_count if spec.sections_count > 0 else 1
 
-    # Фасады
     old_facades = next((r.qty for r in spec.corpus_rows if 'фасад' in r.name.lower()), old_spans)
     new_facades = math.ceil(old_facades * span_ratio)
 
-    # Высота фасада для петель
     facade_row = next((r for r in spec.corpus_rows if 'фасад' in r.name.lower()), None)
     facade_height = facade_row.length_mm if facade_row else 2700
     petals_per_f = _petals_per_facade(facade_height)
 
-    new_furn = []
+    new_furn: List[dict] = []
+    furn_warnings: List[str] = []
+    total_led_power = 0.0
+    total_led_length_m = 0.0
+
+    spans_per_section = [_calc_spans_for_section(w) for w in new_sections]
+    span_width = new_width / new_spans if new_spans else new_width
+
     for item in spec.furniture_items:
         name_low = item.name.lower()
         base_qty = item.qty or 0
         new_qty = base_qty
+        meta: Dict[str, Optional[float]] = {}
 
         if 'петл' in name_low or 'чашк' in name_low or ('заглушка' in name_low and 'петл' in name_low):
             new_qty = new_facades * petals_per_f
         elif 'ручк' in name_low:
-            new_qty = new_facades  # 1 на фасад (или +if для широких >900 мм: *2)
+            new_qty = new_facades
         elif 'полкодерж' in name_low:
             new_qty *= span_ratio
         elif 'стяжка межсекцион' in name_low:
-            new_qty = (len(new_sections) - 1) * (base_qty / (spec.sections_count - 1)) if spec.sections_count > 1 else 0
+            stiazki_per_connection = max(1, math.ceil(spec.height_mm / 700))
+            new_qty = (len(new_sections) - 1) * stiazki_per_connection if len(new_sections) > 1 else 0
         elif 'корректор фасада' in name_low:
             new_qty = new_facades
         elif 'винт' in name_low or 'ключ' in name_low:
-            new_qty = base_qty * section_ratio  # По секциям, не пролётам
+            new_qty = math.ceil(base_qty) if base_qty else 2
         elif 'штанг' in name_low:
-            new_qty = len(new_sections)  # По секциям (длина штанги = ширина_секции - стенки)
+            new_qty = 0
+            lengths_mm: List[int] = []
+            for w, _ in zip(new_sections, spans_per_section):
+                rods_per_section = 2 if w > 1500 else 1
+                new_qty += rods_per_section
+                lengths_mm.extend([max(w - 40, 0)] * rods_per_section)
+            meta['lengths_mm'] = lengths_mm
         elif 'подсветк' in name_low or 'led' in name_low or 'освещен' in name_low:
-            new_qty *= span_ratio  # По пролётам (или по длине полок)
+            new_qty *= span_ratio
+            led_length_mm = max(int(span_width - 100), 0)
+            total_length_m = (led_length_mm / 1000) * new_qty
+            power = total_length_m * 10
+            total_led_power += power
+            total_led_length_m += total_length_m
+            meta['power_w'] = power
+            meta['length_mm'] = led_length_mm
         else:
             new_qty *= span_ratio
 
@@ -751,10 +787,17 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> List[dict]:
             'name': item.name,
             'code': item.code,
             'qty': math.ceil(new_qty),
-            'unit': item.unit or 'шт'
+            'unit': item.unit or 'шт',
+            **meta
         })
 
-    return new_furn
+    if total_led_power > 50:
+        furn_warnings.append("⚠️ LED: Нужен доп. блок (мощность > 50 Вт)")
+    if total_led_length_m > 0:
+        blocks_needed = math.ceil(total_led_length_m / 5)
+        furn_warnings.append(f"ℹ️ LED: Блок питания x{blocks_needed}, ≥{round(total_led_power * 1.2, 1)} Вт")
+
+    return new_furn, furn_warnings, total_led_power
 
 
 def _format_structure(width_total: int, depth: int, height: int, sections: List[int]) -> str:
@@ -880,8 +923,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         sections = _split_sections(new_width)
-        corpus_parts, new_weight, warnings = _recalculate_corpus(spec, new_width)
-        furniture_items = _recalculate_furniture(spec, new_width)
+        corpus_parts, new_weight, warnings, furniture_items = _recalculate_corpus(spec, new_width)
 
         # Формируем ответ
         msg = "✅ Пересчёт завершён!\n\n"
@@ -892,20 +934,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         msg += f"  • Разница: {new_weight - spec.total_weight_kg:+.2f} кг\n"
         
         msg += f"\n\n🔨 КОРПУСНЫЕ ДЕТАЛИ ({len(corpus_parts)} поз.):\n"
-        for i, p in enumerate(corpus_parts, 1):
+        msg += "| Деталь | Размер | Qty |\n| --- | --- | --- |\n"
+        for p in corpus_parts:
             thick_str = f" (т.{p['thickness']}мм)" if p.get('thickness') else ""
             mat_str = f" [{p['material']}]" if p.get('material') else ""
-            msg += f"{i}. {p['name']}{thick_str}{mat_str}\n"
-            msg += f"   {p['size']} — {p['qty']} шт\n"
-        
+            msg += f"| {p['name']}{thick_str}{mat_str} | {p['size']} | {p['qty']} шт |\n"
+
         if furniture_items:
             msg += f"\n🔩 ФУРНИТУРА ({len(furniture_items)} поз.):\n"
             for i, f in enumerate(furniture_items, 1):
                 code_str = f" [{f['code']}]" if f.get('code') else ""
                 qty_str = f"{f['qty']:.1f}" if f.get('qty') else "—"
                 unit_str = f.get('unit', 'шт')
+                power_str = ""
+                if 'power_w' in f:
+                    power_str = f" (мощность {round(f['power_w'], 2)} Вт)"
+                length_str = ""
+                if 'length_mm' in f:
+                    length_str = f" (длина {f['length_mm']} мм)"
+                if 'lengths_mm' in f:
+                    lengths = ", ".join(str(l) for l in f['lengths_mm'])
+                    length_str = f" (длины: {lengths} мм)"
                 msg += f"{i}. {f['name']}{code_str}\n"
-                msg += f"   {qty_str} {unit_str}\n"
+                msg += f"   {qty_str} {unit_str}{power_str}{length_str}\n"
 
         if warnings:
             msg += "\n\n⚠️ Предупреждения по раскрою:\n"
