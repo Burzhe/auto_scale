@@ -36,7 +36,7 @@ PARTITION_THRESHOLD = 800
 
 # Типичная плотность ДСП/МДФ (кг/м³)
 MATERIAL_DENSITY = 750
-
+# Добавляем русскую х и звездочку
 SIZE_RE = re.compile(r"(\d+)\s*[xх×*]\s*(\d+)", re.IGNORECASE)
 ГАБАРИТ_RE = re.compile(r"(\d{3,4})\s*[xх×*]\s*(\d+)\s*[xх×*]\s*(\d+)", re.IGNORECASE)
 
