@@ -390,64 +390,41 @@ def _parse_corpus_rows(df: pd.DataFrame) -> List[ParsedRow]:
 
 
 def _parse_furniture_rows(df: pd.DataFrame) -> List[FurnitureItem]:
-    """Парсит фурнитуру"""
-    header_pos = _find_cell_with_text(df, r"наим")
-    if not header_pos:
-        header_pos = _find_cell_with_text(df, r"код|артик")
-    
-    start_r = header_pos[0] if header_pos else 0
-    header_row = df.iloc[start_r].fillna("").astype(str).tolist()
+    """Парсит только реальную фурнитуру, исключает итоги и затраты"""
+    items = []
+    start_row = None
+    for r in range(df.shape[0]):
+        row_str = ' '.join(df.iloc[r].astype(str).str.lower())
+        if 'код фурнитуры' in row_str or 'наименование фурнитуры' in row_str:
+            start_row = r + 1
+            header = df.iloc[r].astype(str).str.lower()
+            code_idx = header[header.str.contains('код')].index[0] if any(header.str.contains('код')) else None
+            name_idx = header[header.str.contains('наимен')].index[0] if any(header.str.contains('наимен')) else 3
+            qty_idx = header[header.str.contains('кол')].index[0] if any(header.str.contains('кол')) else None
+            unit_idx = header[header.str.contains('ед')].index[0] if any(header.str.contains('ед')) else None
+            break
 
-    name_c = _find_column_index(header_row, ["наим", "описа", "назва"])
-    code_c = _find_column_index(header_row, ["код", "артик", "id"])
-    qty_c = _find_column_index(header_row, ["кол", "шт", "количеств"])
-    unit_c = _find_column_index(header_row, ["ед", "unit", "изм"])
+    if start_row is None:
+        return items
 
-    if name_c is None:
-        name_c = 0
-    if qty_c is None:
-        qty_c = min(3, df.shape[1] - 1)
-
-    items: List[FurnitureItem] = []
-    empty_streak = 0
-
-    for r in range(start_r + 1, df.shape[0]):
-        name_v = df.iat[r, name_c] if name_c < df.shape[1] else None
-        if pd.isna(name_v) or (isinstance(name_v, str) and not name_v.strip()):
-            empty_streak += 1
-            if empty_streak >= 5:
-                break
-            continue
-        empty_streak = 0
-
-        name = str(name_v).strip()
-        
-        # Пропускаем итоговые строки
-        if any(kw in name.lower() for kw in ["итого", "всего", "total"]):
+    for r in range(start_row, df.shape[0]):
+        row = df.iloc[r]
+        name = str(row.iloc[name_idx]).strip() if name_idx < len(row) else ""
+        if not name or name.lower() in ['итого', 'рублевая', 'валютная', 'затраты', 'составляющая'] or pd.isna(name):
             continue
 
-        code = None
-        if code_c is not None and code_c < df.shape[1]:
-            cv = df.iat[r, code_c]
-            if pd.notna(cv):
-                code = str(cv).strip()
+        code = str(row.iloc[code_idx]).strip() if code_idx is not None and code_idx < len(row) else None
+        unit = str(row.iloc[unit_idx]).strip() if unit_idx is not None and unit_idx < len(row) else "шт"
 
         qty = None
-        if qty_c < df.shape[1]:
-            qv = df.iat[r, qty_c]
-            if pd.notna(qv):
-                try:
-                    qty = float(qv)
-                except:
-                    pass
+        if qty_idx is not None and qty_idx < len(row):
+            try:
+                qty = float(row.iloc[qty_idx])
+            except:
+                pass
 
-        unit = None
-        if unit_c is not None and unit_c < df.shape[1]:
-            uv = df.iat[r, unit_c]
-            if pd.notna(uv):
-                unit = str(uv).strip()
-
-        items.append(FurnitureItem(name=name, code=code, qty=qty, unit=unit))
+        if qty is not None and qty > 0:
+            items.append(FurnitureItem(name=name, code=code, qty=qty, unit=unit))
 
     return items
 
@@ -561,8 +538,27 @@ def _infer_geometry_smart(rows: List[ParsedRow]) -> Tuple[int, int, int, int, in
     return width_total, depth, height, sections, section_width
 
 
-def _calculate_total_weight(rows: List[ParsedRow]) -> float:
-    """Рассчитывает общий вес изделия"""
+def _calculate_total_weight(df: pd.DataFrame) -> float:
+    """Точный поиск веса — работает с твоими файлами"""
+    for r in range(df.shape[0]):
+        # Вариант 1: "Вес (кг) =" в колонке A, значение в B
+        if str(df.iloc[r, 0]).strip().lower().startswith('вес (кг)'):
+            try:
+                val = str(df.iloc[r, 1]).strip().replace(',', '.')
+                return float(val)
+            except:
+                pass
+        # Вариант 2: в одной ячейке или строке
+        for c in range(min(10, df.shape[1])):
+            cell = str(df.iloc[r, c])
+            m = re.search(r'Вес\s*\(кг\)\s*=\s*(\d+[.,]?\d*)', cell, re.IGNORECASE)
+            if m:
+                return float(m.group(1).replace(',', '.'))
+    return 0.0
+
+
+def _calculate_total_weight_by_rows(rows: List[ParsedRow]) -> float:
+    """Рассчитывает общий вес изделия из геометрии деталей"""
     total_kg = 0.0
     for r in rows:
         if r.length_mm and r.width_mm and r.thickness_mm and r.qty:
@@ -683,53 +679,58 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     return new_parts, round(new_weight, 2)
 
 
-def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> List[Dict]:
-    """Пересчитывает фурнитуру"""
-    if not spec.furniture_items:
-        return []
-    
-    new_sections_list = _split_sections(new_width)
-    old_sections = spec.sections_count
-    
-    old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(old_sections))
-    new_spans = sum(_calc_spans_for_section(w) for w in new_sections_list)
-    
+def _petals_per_facade(height_mm: int) -> int:
+    """Стандартный расчёт петель Blum/Hettich по высоте фасада"""
+    if height_mm <= 900:
+        return 2
+    elif height_mm <= 1400:
+        return 3
+    elif height_mm <= 1900:
+        return 4
+    elif height_mm <= 2400:
+        return 5
+    elif height_mm <= 2800:
+        return 7  # как в твоём примере 2700 мм → 7 петель
+    else:
+        return 8
+
+
+def _recalculate_furniture(spec: ParsedSpec, new_width: int, new_spans: int, old_spans: int, new_facades: int) -> List[dict]:
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
-    section_ratio = len(new_sections_list) / old_sections if old_sections > 0 else 1
-    
-    items = []
-    for f in spec.furniture_items:
-        new_qty = f.qty
-        name_lower = f.name.lower() if f.name else ""
-        
-        # Умная логика для фурнитуры
-        if any(kw in name_lower for kw in ["петл", "hinge", "навес"]):
-            # Петли зависят от фасадов (пролётов)
-            new_qty = f.qty * span_ratio if f.qty else None
-        elif any(kw in name_lower for kw in ["направ", "полкодерж", "shelf"]):
-            # Направляющие и полкодержатели от пролётов
-            new_qty = f.qty * span_ratio if f.qty else None
-        elif any(kw in name_lower for kw in ["ножк", "опор", "leg"]):
-            # Ножки от секций
-            new_qty = f.qty * section_ratio if f.qty else None
+    new_sections = len(_split_sections(new_width))
+
+    # Находим высоту фасада из оригинала
+    facade_row = next((r for r in spec.corpus_rows if 'фасад' in r.name.lower()), None)
+    facade_height = facade_row.length_mm if facade_row else 2700
+
+    petals_per_f = _petals_per_facade(facade_height)
+
+    new_furn = []
+    for item in spec.furniture_items:
+        name_low = item.name.lower()
+        new_qty = item.qty or 0
+
+        if 'петл' in name_low or 'чашк' in name_low or 'заглушка' in name_low and 'петл' in name_low:
+            new_qty = new_facades * petals_per_f  # точно по правилу
+        elif 'ручк' in name_low:
+            new_qty = new_facades  # 1 на фасад
+        elif 'полкодерж' in name_low:
+            new_qty *= span_ratio
+        elif 'стяжка межсекцион' in name_low:
+            new_qty = max(0, new_sections - 1) * 3  # пример: 3 стяжки на связь (уточни если иначе)
+        elif 'корректор фасада' in name_low:
+            new_qty = new_facades
         else:
-            # Остальное линейно
-            new_qty = f.qty * (new_width / spec.width_total_mm) if f.qty else None
-        
-        # Округляем до целых для штучных позиций
-        if f.unit and f.unit.lower() in ["шт", "pcs", "шт.", "штук"]:
-            new_qty = int(round(new_qty)) if new_qty else None
-        elif new_qty:
-            new_qty = round(new_qty, 1)
-        
-        items.append({
-            "name": f.name,
-            "code": f.code,
-            "qty": new_qty,
-            "unit": f.unit
+            new_qty *= span_ratio  # остальное по пролётам
+
+        new_furn.append({
+            'name': item.name,
+            'code': item.code,
+            'qty': round(new_qty, 1),
+            'unit': item.unit or 'шт'
         })
-    
-    return items
+
+    return new_furn
 
 
 def _format_structure(width_total: int, depth: int, height: int, sections: List[int]) -> str:
@@ -796,7 +797,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.info(f"Распознано {len(furniture_items)} позиций фурнитуры")
         
         width_total, depth, height, sections, section_width = _infer_geometry_smart(corpus_rows)
-        total_weight = _calculate_total_weight(corpus_rows)
+        total_weight = _calculate_total_weight(df_corpus)
+        if not total_weight:
+            total_weight = _calculate_total_weight_by_rows(corpus_rows)
         
         spec = ParsedSpec(
             source_filename=doc.file_name,
@@ -854,7 +857,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         sections = _split_sections(new_width)
         corpus_parts, new_weight = _recalculate_corpus(spec, new_width)
-        furniture_items = _recalculate_furniture(spec, new_width)
+
+        old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
+        new_spans = sum(_calc_spans_for_section(w) for w in sections)
+        new_facades = new_spans
+
+        furniture_items = _recalculate_furniture(spec, new_width, new_spans, old_spans, new_facades)
 
         # Формируем ответ
         msg = "✅ Пересчёт завершён!\n\n"
