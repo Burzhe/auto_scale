@@ -42,7 +42,7 @@ class RecalculateShelvesTest(unittest.TestCase):
     def test_preserves_shelves_ratio_on_resize(self):
         """Полки пересчитываются по секциям, а не по среднему числу пролётов."""
         new_width = 3000  # станет 3 секции
-        corpus_parts, _, _, _ = _recalculate_corpus(self.spec, new_width)
+        corpus_parts, _, _, _, _ = _recalculate_corpus(self.spec, new_width)
 
         shelf_part = next(p for p in corpus_parts if "полк" in p["name"].lower())
         self.assertEqual(8, shelf_part["qty"])
@@ -82,12 +82,13 @@ class RecalculateFacadeTest(unittest.TestCase):
             total_weight_kg=85.5,
         )
 
-        corpus_parts, weight, warnings, furniture_items = _recalculate_corpus(spec, new_width=2000)
+        corpus_parts, weight, cut_warnings, general_recommendations, furniture_items = _recalculate_corpus(spec, new_width=2000)
 
         self.assertEqual(1, len(corpus_parts))
         self.assertEqual("Боковина", corpus_parts[0]["name"])
         self.assertEqual(85.5, weight)
-        self.assertEqual([], warnings)
+        self.assertEqual([], cut_warnings)
+        self.assertEqual([], general_recommendations)
         self.assertEqual(1, len(furniture_items))
         self.assertEqual(8, furniture_items[0]["qty"])
 
@@ -115,14 +116,14 @@ class RecalculateFacadeTest(unittest.TestCase):
 
     def test_facade_qty_uses_spans_ratio(self):
         new_width = 2500  # -> 3 секции, 6 пролётов
-        corpus_parts, _, _, _ = _recalculate_corpus(self.spec, new_width)
+        corpus_parts, _, _, _, _ = _recalculate_corpus(self.spec, new_width)
 
         facade_part = next(p for p in corpus_parts if "фасад" in p["name"].lower())
         self.assertEqual(12, facade_part["qty"])
 
     def test_facade_width_description_keeps_proportion(self):
         new_width = 2500
-        corpus_parts, _, _, _ = _recalculate_corpus(self.spec, new_width)
+        corpus_parts, _, _, _, _ = _recalculate_corpus(self.spec, new_width)
 
         sections = _split_sections(new_width)
         span_widths = []
