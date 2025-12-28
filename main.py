@@ -739,10 +739,11 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     new_span_widths = _calculate_span_widths(new_sections)
 
     if new_width == old_width:
-        furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
-        return [
+        logger.info("Ширина не изменилась — возвращаем исходные данные без пересчёта.")
+        corpus_parts = [
             {
                 'name': r.name,
+                'material': r.material,
                 'thickness': r.thickness_mm,
                 'length_mm': r.length_mm,
                 'width_mm': r.width_mm,
@@ -750,7 +751,29 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
                 'size': f"{r.length_mm}×{r.width_mm}",
             }
             for r in spec.corpus_rows
-        ], spec.total_weight_kg, furn_warnings, furn_items
+        ]
+
+        warnings: List[str] = []
+        for part in corpus_parts:
+            if part.get('length_mm') and part.get('width_mm'):
+                warning = _check_material_sheet_limits(part)
+                if warning:
+                    warnings.append(warning)
+
+        furn_items = [
+            {
+                'name': f_item.name,
+                'code': f_item.code,
+                'qty': f_item.qty,
+                'unit': f_item.unit or 'шт',
+            }
+            for f_item in spec.furniture_items
+        ]
+
+        return [
+            part | {'widths_mm': []}
+            for part in corpus_parts
+        ], spec.total_weight_kg, warnings, furn_items
 
     old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
     new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
