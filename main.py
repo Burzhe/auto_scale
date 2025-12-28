@@ -771,8 +771,16 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             new_qty = new_sections_count
             new_width_part = new_width // new_sections_count if new_sections_count else new_width_part
         elif 'крышк' in name_low or 'дно' in name_low:
-            new_qty = new_sections_count * 2
-            new_length = new_width // new_sections_count if new_sections_count else new_length
+            # Определяем логику из исходного файла
+            pieces_per_section = row.qty / spec.sections_count if spec.sections_count > 0 else 2  # e.g. 6/3=2
+            if row.length_mm and row.length_mm > spec.section_width_mm * 1.5:
+                # Это ЦЕЛЬНАЯ крышка на весь шкаф (B)
+                new_qty = row.qty  # обычно 2 (верх + низ)
+                new_length = new_width
+            else:
+                # Это крышки ПО СЕКЦИЯМ (A)
+                new_qty = new_sections_count * pieces_per_section
+                new_length = new_width // new_sections_count
         elif 'боков' in name_low:
             new_qty = 2
         elif 'средние' in name_low or 'перегород' in name_low:
