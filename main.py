@@ -1017,6 +1017,17 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict]
     facade_height = facade_row.length_mm if facade_row else 2700
     petals_per_f = _petals_per_facade(facade_height)
 
+    drawers_rows = [r for r in spec.corpus_rows if r.name and 'ящик' in r.name.lower()]
+    old_drawers = sum(r.qty for r in drawers_rows if r.qty) if drawers_rows else 0
+    recalculated_drawers = old_drawers * section_ratio if old_drawers else 0
+    handles_drawer_qty = math.ceil(recalculated_drawers) if recalculated_drawers else 0
+    logger.info(
+        "Ящики: исходное qty=%s, коэффициент секций=%.2f, пересчитано=%s",
+        old_drawers,
+        section_ratio,
+        handles_drawer_qty,
+    )
+
     new_furn: List[dict] = []
     furn_warnings: List[str] = []
     total_led_power = 0.0
@@ -1026,6 +1037,7 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict]
 
     spans_per_section = [_calc_spans_for_section(w) for w in new_sections]
     span_width = new_width / new_spans if new_spans else new_width
+    handle_drawer_warning_added = False
 
     for item in spec.furniture_items:
         name_low = item.name.lower()
@@ -1036,7 +1048,19 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict]
         if 'петл' in name_low or 'чашк' in name_low or ('заглушка' in name_low and 'петл' in name_low):
             new_qty = new_facades * petals_per_f
         elif 'ручк' in name_low:
-            new_qty = new_facades
+            new_qty = new_facades + handles_drawer_qty
+            if old_drawers and handles_drawer_qty and not handle_drawer_warning_added:
+                furn_warnings.append(
+                    f"ℹ️ Ручки: учтены ящики {old_drawers}→{handles_drawer_qty} (коэф. секций {section_ratio:.2f})"
+                )
+                handle_drawer_warning_added = True
+            logger.info(
+                "Ручки: фасады=%s, ящики=%s, итоговое qty=%s (исходное qty=%s)",
+                new_facades,
+                handles_drawer_qty,
+                new_qty,
+                base_qty,
+            )
         elif 'полкодерж' in name_low:
             if old_shelves > 0 and new_shelves > 0:
                 supports_per_shelf = base_qty / old_shelves
