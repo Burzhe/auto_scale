@@ -75,6 +75,17 @@ class ParsedSpec:
 USER_STATE: Dict[int, ParsedSpec] = {}
 
 
+@dataclass
+class SectionType:
+    """Тип секции шкафа"""
+
+    width_mm: int
+    has_rod: bool = False
+    has_shelves: bool = False
+    has_lighting: bool = False
+    shelf_count: int = 0
+
+
 def _find_sheet_by_keywords(xl, keywords: List[str]) -> Optional[str]:
     """Ищет лист по ключевым словам"""
     sheet_names = xl.sheet_names
@@ -625,8 +636,41 @@ def _calc_spans_for_section(section_w: int) -> int:
     return spans
 
 
+def _analyze_section_types(spec: ParsedSpec) -> List[SectionType]:
+    """Анализирует функциональные зоны шкафа"""
+    sections: List[SectionType] = []
+
+    rods = [r for r in spec.corpus_rows if r.name and 'штанг' in r.name.lower()]
+    total_rods = sum(r.qty for r in rods if r.qty) if rods else 0
+
+    shelves = [r for r in spec.corpus_rows if r.name and 'полк' in r.name.lower()]
+    total_shelves = sum(r.qty for r in shelves if r.qty) if shelves else 0
+
+    lights = [
+        f for f in spec.furniture_items
+        if any(kw in f.name.lower() for kw in ['подсвет', 'led', 'освещ'])
+    ]
+    has_lighting = len(lights) > 0
+
+    rods_per_section = total_rods / spec.sections_count if spec.sections_count > 0 else 0
+    shelves_per_section = total_shelves / spec.sections_count if spec.sections_count > 0 else 0
+
+    for _ in range(spec.sections_count):
+        section = SectionType(
+            width_mm=spec.section_width_mm,
+            has_rod=(rods_per_section > 0),
+            has_shelves=(shelves_per_section > 0),
+            shelf_count=int(shelves_per_section),
+            has_lighting=has_lighting,
+        )
+        sections.append(section)
+
+    return sections
+
+
 def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], float, List[str], List[dict]]:
     old_width = spec.width_total_mm
+    original_sections_types = _analyze_section_types(spec)
     new_sections = _split_sections(new_width)
     new_sections_count = len(new_sections)
 
@@ -637,6 +681,39 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
 
     old_polki = next((r.qty for r in spec.corpus_rows if 'полк' in r.name.lower()), 0) or 0
     polki_per_span = math.ceil(old_polki / old_spans) if old_spans > 0 else 6
+
+    # Сопоставляем новые секции со старыми типами (пропорционально)
+    section_type_map: List[SectionType] = []
+    for i, new_sec_width in enumerate(new_sections):
+        original_idx = int(i * len(original_sections_types) / len(new_sections)) if original_sections_types else 0
+        original_type = original_sections_types[min(original_idx, len(original_sections_types) - 1)] if original_sections_types else SectionType(width_mm=new_sec_width)
+
+        new_type = SectionType(
+            width_mm=new_sec_width,
+            has_rod=original_type.has_rod,
+            has_shelves=original_type.has_shelves,
+            has_lighting=original_type.has_lighting,
+            shelf_count=original_type.shelf_count,
+        )
+        section_type_map.append(new_type)
+
+    # Карта материалов
+    material_map: Dict[str, str] = {}
+    for row in spec.corpus_rows:
+        name_key = row.name.lower()
+        if 'фасад' in name_key:
+            material_map['фасад'] = row.material or 'МДФ'
+        elif 'боков' in name_key or 'стенк' in name_key:
+            if any(kw in name_key for kw in ['видим', 'наружн', 'внешн']):
+                material_map['стенка_видимая'] = row.material or 'ЛДСП'
+            else:
+                material_map['стенка_внутр'] = row.material or 'ЛДСП'
+        elif 'полк' in name_key:
+            material_map['полка'] = row.material or 'ЛДСП'
+        elif 'крышк' in name_key or 'дно' in name_key:
+            material_map['крышка'] = row.material or 'ЛДСП'
+        elif 'перегород' in name_key or 'стойк' in name_key:
+            material_map['перегородка'] = row.material or 'ЛДСП'
 
     new_parts = []
     for row in spec.corpus_rows:
@@ -665,9 +742,24 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
         else:
             new_qty *= (new_width / old_width) if old_width else section_ratio
 
+        inferred_material = row.material
+        if not inferred_material:
+            if 'фасад' in name_low:
+                inferred_material = material_map.get('фасад', 'МДФ')
+            elif 'боков' in name_low or 'стенк' in name_low:
+                inferred_material = material_map.get('стенка_внутр', 'ЛДСП')
+                if any(kw in name_low for kw in ['видим', 'наружн', 'внешн']):
+                    inferred_material = material_map.get('стенка_видимая', inferred_material)
+            elif 'полк' in name_low:
+                inferred_material = material_map.get('полка', 'ЛДСП')
+            elif any(kw in name_low for kw in ['крышк', 'дно']):
+                inferred_material = material_map.get('крышка', 'ЛДСП')
+            elif any(kw in name_low for kw in ['перегород', 'стойк']):
+                inferred_material = material_map.get('перегородка', 'ЛДСП')
+
         new_parts.append({
             'name': row.name,
-            'material': row.material,
+            'material': inferred_material,
             'thickness': row.thickness_mm,
             'length_mm': new_length,
             'width_mm': new_width_part,
@@ -680,8 +772,8 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     new_weight = 0.0
     for p in new_parts:
         if p['thickness'] and p['length_mm'] and p['width_mm'] and p['qty']:
-            length_adj = p['length_mm'] + 2
-            width_adj = p['width_mm'] + 2
+            length_adj = p['length_mm']
+            width_adj = p['width_mm']
             material_hint = f"{p['name']} {p.get('material') or ''}".lower()
             if 'фанер' in material_hint:
                 density = 600
@@ -694,16 +786,13 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
 
     furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
     furn_weight = sum(f['qty'] * 0.05 for f in furn_items)
-    new_weight = (new_weight + furn_weight) * 1.2
+    new_weight = new_weight + furn_weight
 
-    warnings = []
+    warnings: List[str] = []
     for p in new_parts:
-        dim1 = p['length_mm']
-        dim2 = p['width_mm']
-        max_sheet_long = 2800 if 'лдсп' in p['name'].lower() else 2440 if 'фанера' in p['name'].lower() else 2800
-        max_sheet_short = 2070 if 'лдсп' in p['name'].lower() else 1220 if 'фанера' in p['name'].lower() else 2070
-        if max(dim1, dim2) > max_sheet_long or min(dim1, dim2) > max_sheet_short:
-            warnings.append(f"⚠️ {p['name']} ({dim1}×{dim2}) > листа ({max_sheet_long}×{max_sheet_short}) — требуется деление + вставка")
+        warning = _check_material_sheet_limits(p)
+        if warning:
+            warnings.append(warning)
 
     if spec.height_mm > 2500:
         warnings.append("⚠️ Устойчивость: добавить антиопрокидывание")
@@ -711,6 +800,26 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     warnings.extend(furn_warnings)
 
     return new_parts, round(new_weight, 2), warnings, furn_items
+
+
+def _check_material_sheet_limits(part: dict) -> Optional[str]:
+    """Проверяет влезает ли деталь в стандартный лист и выдаёт предупреждение"""
+    material = (part.get('material') or '').lower()
+    length = part['length_mm']
+    width = part['width_mm']
+
+    if 'лдсп' in material or 'дсп' in part['name'].lower():
+        max_l, max_w = 2800, 2070
+    elif 'мдф' in material:
+        max_l, max_w = 2800, 2070
+    elif 'фанер' in material:
+        max_l, max_w = 2440, 1220
+    else:
+        max_l, max_w = 2800, 2070
+
+    if max(length, width) > max_l or min(length, width) > max_w:
+        return f"⚠️ {part['name']} ({length}×{width}) не влезает в лист {max_l}×{max_w} - нужна стыковка"
+    return None
 
 
 def _petals_per_facade(height_mm: int) -> int:
@@ -764,13 +873,22 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict]
         elif 'винт' in name_low or 'ключ' in name_low:
             new_qty = math.ceil(base_qty) if base_qty else 2
         elif 'штанг' in name_low:
-            new_qty = 0
-            lengths_mm: List[int] = []
-            for w, _ in zip(new_sections, spans_per_section):
-                rods_per_section = 2 if w > 1500 else 1
-                new_qty += rods_per_section
-                lengths_mm.extend([max(w - 40, 0)] * rods_per_section)
-            meta['lengths_mm'] = lengths_mm
+            # Штанги ставятся только в секциях-гардеробных
+            # Определяем какие секции имели штанги изначально
+            original_has_rods = base_qty > 0
+            if not original_has_rods:
+                new_qty = 0
+            else:
+                rods_per_original_section = base_qty / spec.sections_count if spec.sections_count > 0 else 1
+                new_qty = 0
+                lengths_mm: List[int] = []
+                for w in new_sections:
+                    if rods_per_original_section > 0:
+                        rods_in_section = math.ceil(rods_per_original_section)
+                        new_qty += rods_in_section
+                        rod_length = max(w - 40, 0)
+                        lengths_mm.extend([rod_length] * rods_in_section)
+                meta['lengths_mm'] = lengths_mm
         elif 'подсветк' in name_low or 'led' in name_low or 'освещен' in name_low:
             new_qty *= span_ratio
             led_length_mm = max(int(span_width - 100), 0)
@@ -934,11 +1052,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         msg += f"  • Разница: {new_weight - spec.total_weight_kg:+.2f} кг\n"
         
         msg += f"\n\n🔨 КОРПУСНЫЕ ДЕТАЛИ ({len(corpus_parts)} поз.):\n"
-        msg += "| Деталь | Размер | Qty |\n| --- | --- | --- |\n"
-        for p in corpus_parts:
-            thick_str = f" (т.{p['thickness']}мм)" if p.get('thickness') else ""
-            mat_str = f" [{p['material']}]" if p.get('material') else ""
-            msg += f"| {p['name']}{thick_str}{mat_str} | {p['size']} | {p['qty']} шт |\n"
+        for i, p in enumerate(corpus_parts, 1):
+            thick_str = f"т.{p['thickness']}мм" if p.get('thickness') else ""
+            mat_str = f"{p['material']}" if p.get('material') else "ЛДСП"
+            attrs = ", ".join([x for x in [thick_str, mat_str] if x])
+            msg += f"{i}. {p['name']}\n"
+            msg += f"   📐 {p['size']} ({attrs}) × {p['qty']} шт\n"
 
         if furniture_items:
             msg += f"\n🔩 ФУРНИТУРА ({len(furniture_items)} поз.):\n"
@@ -946,17 +1065,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 code_str = f" [{f['code']}]" if f.get('code') else ""
                 qty_str = f"{f['qty']:.1f}" if f.get('qty') else "—"
                 unit_str = f.get('unit', 'шт')
-                power_str = ""
+                meta_parts = []
                 if 'power_w' in f:
-                    power_str = f" (мощность {round(f['power_w'], 2)} Вт)"
-                length_str = ""
+                    meta_parts.append(f"мощн. {round(f['power_w'], 2)} Вт")
                 if 'length_mm' in f:
-                    length_str = f" (длина {f['length_mm']} мм)"
+                    meta_parts.append(f"дл. {f['length_mm']} мм")
                 if 'lengths_mm' in f:
                     lengths = ", ".join(str(l) for l in f['lengths_mm'])
-                    length_str = f" (длины: {lengths} мм)"
+                    meta_parts.append(f"длины: {lengths} мм")
+                meta_str = f" ({'; '.join(meta_parts)})" if meta_parts else ""
                 msg += f"{i}. {f['name']}{code_str}\n"
-                msg += f"   {qty_str} {unit_str}{power_str}{length_str}\n"
+                msg += f"   🔧 {qty_str} {unit_str}{meta_str}\n"
 
         if warnings:
             msg += "\n\n⚠️ Предупреждения по раскрою:\n"
