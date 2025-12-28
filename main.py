@@ -966,12 +966,49 @@ def _petals_per_facade(height_mm: int) -> int:
     else: return 8
 
 
+def _calculate_shelf_counts(spec: ParsedSpec, new_width: int) -> Tuple[float, float]:
+    """Возвращает исходное и новое количество полок для пересчёта фурнитуры."""
+
+    old_shelves = sum(r.qty for r in spec.corpus_rows if r.name and 'полк' in r.name.lower() and r.qty)
+    new_sections = _split_sections(new_width)
+    original_sections_types = _analyze_section_types(spec)
+
+    section_type_map: List[SectionType] = []
+    for i, new_sec_width in enumerate(new_sections):
+        original_idx = int(i * len(original_sections_types) / len(new_sections)) if original_sections_types else 0
+        original_type = (
+            original_sections_types[min(original_idx, len(original_sections_types) - 1)]
+            if original_sections_types
+            else SectionType(width_mm=new_sec_width)
+        )
+
+        section_type_map.append(
+            SectionType(
+                width_mm=new_sec_width,
+                has_rod=original_type.has_rod,
+                has_shelves=original_type.has_shelves,
+                has_lighting=original_type.has_lighting,
+                shelf_count=original_type.shelf_count,
+            )
+        )
+
+    shelves_plan = [sec.shelf_count for sec in section_type_map]
+    new_shelves = sum(shelves_plan)
+
+    if not new_shelves and old_shelves and spec.sections_count:
+        new_shelves = (old_shelves / spec.sections_count) * len(new_sections)
+
+    return float(old_shelves), float(new_shelves)
+
+
 def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict], List[str], float]:
     old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
     new_sections = _split_sections(new_width)
     new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
     section_ratio = len(new_sections) / spec.sections_count if spec.sections_count > 0 else 1
+
+    old_shelves, new_shelves = _calculate_shelf_counts(spec, new_width)
 
     facade_row = next((r for r in spec.corpus_rows if 'фасад' in r.name.lower()), None)
     old_facades = facade_row.qty if facade_row and facade_row.qty is not None else old_spans
@@ -984,6 +1021,8 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict]
     furn_warnings: List[str] = []
     total_led_power = 0.0
     total_led_length_m = 0.0
+    if old_shelves == 0 or new_shelves == 0:
+        furn_warnings.append("⚠️ Недостаточно данных по полкам — использован пересчёт по пролётам.")
 
     spans_per_section = [_calc_spans_for_section(w) for w in new_sections]
     span_width = new_width / new_spans if new_spans else new_width
@@ -999,7 +1038,11 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict]
         elif 'ручк' in name_low:
             new_qty = new_facades
         elif 'полкодерж' in name_low:
-            new_qty *= span_ratio
+            if old_shelves > 0 and new_shelves > 0:
+                supports_per_shelf = base_qty / old_shelves
+                new_qty = supports_per_shelf * new_shelves
+            else:
+                new_qty *= span_ratio
         elif 'стяжка межсекцион' in name_low:
             stiazki_per_connection = max(1, math.ceil(spec.height_mm / 700))
             new_qty = (len(new_sections) - 1) * stiazki_per_connection if len(new_sections) > 1 else 0
