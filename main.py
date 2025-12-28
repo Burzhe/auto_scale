@@ -21,7 +21,15 @@ from telegram.ext import (
 load_dotenv()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s %(message)s")
+LOG_FILE = os.getenv("LOG_FILE", "bot.log")
+logging.basicConfig(
+    level=LOG_LEVEL,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+    ],
+)
 logger = logging.getLogger("wardrobe-bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
@@ -1167,6 +1175,9 @@ def _format_structure(width_total: int, depth: int, height: int, sections: List[
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = update.effective_user
+    username = getattr(user, "username", None) or getattr(user, "full_name", None) or "—"
+    logger.info("Command /start by user_id=%s username=%s", getattr(user, "id", "unknown"), username)
     await update.message.reply_text(
         "👋 Привет! Я бот для пересчёта спецификаций шкафов.\n\n"
         "📤 Пришли мне Excel-файл (.xls или .xlsx) с калькуляцией шкафа.\n"
@@ -1189,6 +1200,13 @@ async def debug_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     doc: Document = update.message.document
     user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.full_name or "—"
+    logger.info(
+        "Document received from user_id=%s username=%s filename=%s",
+        user_id,
+        username,
+        doc.file_name,
+    )
 
     if not doc.file_name.lower().endswith((".xls", ".xlsx")):
         await update.message.reply_text("⚠️ Нужен Excel-файл (.xls или .xlsx)")
@@ -1247,6 +1265,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text = (update.message.text or "").strip()
+    username = update.effective_user.username or update.effective_user.full_name or "—"
+    preview = text[:120].replace("\n", " ")
+    logger.info(
+        "Text query from user_id=%s username=%s preview=%s",
+        user_id,
+        username,
+        preview,
+    )
 
     if user_id not in USER_STATE:
         await update.message.reply_text("⚠️ Сначала пришли Excel-файл с калькуляцией.\nИспользуй /start для инструкций.")
