@@ -169,6 +169,29 @@ def _infer_material(name: str, material_value: Optional[str] = None) -> Optional
     return material_value.strip() if isinstance(material_value, str) and material_value.strip() else None
 
 
+def _determine_material(name: str, thickness_mm: Optional[int], row_context: Optional[str] = None) -> str:
+    """Выбирает материал по толщине, названию и строке исходной таблицы."""
+
+    name_low = (name or "").lower()
+    context_low = (row_context or "").lower() or name_low
+
+    material = "ЛДСП"
+    if "мдф" in context_low or thickness_mm == 18:
+        material = "МДФ"
+    elif "фанера" in context_low or thickness_mm in [20, 24, 27]:
+        material = "Фанера"
+    elif "egger 16" in context_low or thickness_mm == 16:
+        material = "ЛДСП Egger 16мм"
+
+    if "фасад" in name_low and material == "МДФ":
+        # Если в строке указаны нулевые операции (нет покраски/эмали), считаем фасад ЛДСП
+        zero_ops = re.findall(r"\b0[,.]0{2,}\b", context_low)
+        if zero_ops:
+            material = "ЛДСП"
+
+    return material
+
+
 def _parse_corpus_rows_by_header(df: pd.DataFrame) -> List[ParsedRow]:
     """Парсит корпусные детали по явной строке заголовка."""
     rows: List[ParsedRow] = []
@@ -199,6 +222,7 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame) -> List[ParsedRow]:
 
     for r in range(start_row, df.shape[0]):
         row = df.iloc[r]
+        row_str = " ".join(str(x) for x in row.tolist())
         name = str(row.iloc[name_idx]).strip() if name_idx < len(row) else ""
         if not name or name.lower() in ["nan", "итого", "пластик", "ткань", "фурнитура"] or pd.isna(name):
             continue
@@ -232,7 +256,7 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame) -> List[ParsedRow]:
             except Exception:
                 pass
 
-        material = _infer_material(name)
+        material = _determine_material(name, thickness_mm, row_str)
 
         if thickness_mm and length_mm and width_mm and qty:
             rows.append(
@@ -392,7 +416,8 @@ def _parse_corpus_rows_heuristic(df: pd.DataFrame) -> List[ParsedRow]:
             if pd.notna(mv):
                 material_value = str(mv).strip()
 
-        material = _infer_material(name, material_value)
+        row_context = " ".join(str(x) for x in row_data.tolist())
+        material = _determine_material(name, thickness_mm, row_context if material_value is None else material_value)
 
         # Добавляем только если есть хоть что-то осмысленное
         if thickness_mm or length_mm or width_mm or qty:
@@ -674,6 +699,20 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     new_sections = _split_sections(new_width)
     new_sections_count = len(new_sections)
 
+    if new_width == old_width:
+        furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
+        return [
+            {
+                'name': r.name,
+                'thickness': r.thickness_mm,
+                'length_mm': r.length_mm,
+                'width_mm': r.width_mm,
+                'qty': r.qty,
+                'size': f"{r.length_mm}×{r.width_mm}",
+            }
+            for r in spec.corpus_rows
+        ], spec.total_weight_kg, furn_warnings, furn_items
+
     old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
     new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
@@ -734,7 +773,11 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
         elif 'крышк' in name_low or 'дно' in name_low:
             new_qty = new_sections_count * 2
             new_length = new_width // new_sections_count if new_sections_count else new_length
-        elif 'боков' in name_low or 'средние' in name_low or 'стенк' in name_low:
+        elif 'боков' in name_low:
+            new_qty = 2
+        elif 'средние' in name_low or 'перегород' in name_low:
+            new_qty = new_sections_count - 1 if new_sections_count > 1 else 0
+        elif 'стенк' in name_low:
             new_qty = new_sections_count + 1
         elif 'цоколь' in name_low:
             new_qty = new_sections_count
@@ -785,7 +828,10 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             new_weight += vol_m3 * density
 
     furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
-    furn_weight = sum(f['qty'] * 0.05 for f in furn_items)
+    if new_width == old_width:
+        furn_weight = sum(f.qty * 0.05 for f in spec.furniture_items)
+    else:
+        furn_weight = sum(f['qty'] * 0.05 for f in furn_items)
     new_weight = new_weight + furn_weight
 
     warnings: List[str] = []
