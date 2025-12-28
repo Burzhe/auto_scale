@@ -678,6 +678,26 @@ def _calc_spans_for_section(section_w: int) -> int:
     return spans
 
 
+def _distribute_width_evenly(total_width: int, parts: int) -> List[int]:
+    """Равномерно распределяет ширину между частями, сохраняя сумму."""
+
+    if parts <= 0:
+        return []
+
+    base, remainder = divmod(total_width, parts)
+    return [base + (1 if i < remainder else 0) for i in range(parts)]
+
+
+def _calculate_span_widths(sections: List[int]) -> List[int]:
+    """Возвращает фактические ширины пролётов по секциям."""
+
+    span_widths: List[int] = []
+    for sec_width in sections:
+        spans = _calc_spans_for_section(sec_width)
+        span_widths.extend(_distribute_width_evenly(sec_width, spans))
+    return span_widths
+
+
 def _analyze_section_types(spec: ParsedSpec) -> List[SectionType]:
     """Анализирует функциональные зоны шкафа"""
     sections: List[SectionType] = []
@@ -716,6 +736,7 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     original_sections_types = _analyze_section_types(spec)
     new_sections = _split_sections(new_width)
     new_sections_count = len(new_sections)
+    new_span_widths = _calculate_span_widths(new_sections)
 
     if new_width == old_width:
         furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
@@ -781,6 +802,8 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
         new_qty = row.qty or 0
         new_length = row.length_mm or 0
         new_width_part = row.width_mm or 0
+        widths_mm: List[int] = []
+        facade_target_qty: Optional[int] = None
 
         if 'полк' in name_low:
             shelves_from_ratio = sum(shelves_plan) if shelves_plan else 0
@@ -789,8 +812,25 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             new_qty = shelves_from_ratio or new_qty
             new_width_part = math.ceil(new_width / new_sections_count) if new_sections_count else new_width_part
         elif 'фасад' in name_low:
-            new_qty *= span_ratio
-            new_width_part = new_width // new_spans if new_spans else new_width_part
+            facades_per_span = new_qty / old_spans if old_spans else new_qty
+            new_qty = facades_per_span * new_spans
+            facades_per_span_int = max(1, int(round(facades_per_span))) if new_spans else 0
+
+            if new_span_widths and facades_per_span_int:
+                for span_w in new_span_widths:
+                    widths_mm.extend(_distribute_width_evenly(span_w, facades_per_span_int))
+
+            facade_target_qty = math.ceil(new_qty) if new_qty else 0
+
+            if widths_mm:
+                if facade_target_qty and len(widths_mm) != facade_target_qty:
+                    if len(widths_mm) > facade_target_qty:
+                        widths_mm = widths_mm[:facade_target_qty]
+                    else:
+                        widths_mm.extend([widths_mm[-1]] * (facade_target_qty - len(widths_mm)))
+                new_width_part = max(widths_mm)
+            else:
+                new_width_part = new_width // new_spans if new_spans else new_width_part
         elif 'задн' in name_low:
             new_qty = new_sections_count
             new_width_part = new_width // new_sections_count if new_sections_count else new_width_part
@@ -838,17 +878,17 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             'thickness': row.thickness_mm,
             'length_mm': new_length,
             'width_mm': new_width_part,
-            'qty': math.ceil(new_qty),
-            'size': f"{new_length}×{new_width_part}"
+            'widths_mm': widths_mm,
+            'qty': facade_target_qty if facade_target_qty is not None else math.ceil(new_qty),
+            'size': f"{new_length}×" + (" / ".join(str(w) for w in widths_mm) if widths_mm else f"{new_width_part}")
         })
 
     logger.debug(new_parts)
 
     new_weight = 0.0
     for p in new_parts:
-        if p['thickness'] and p['length_mm'] and p['width_mm'] and p['qty']:
+        if p['thickness'] and p['length_mm'] and p['qty'] and (p['width_mm'] or p.get('widths_mm')):
             length_adj = p['length_mm']
-            width_adj = p['width_mm']
             material_hint = f"{p['name']} {p.get('material') or ''}".lower()
             if 'фанер' in material_hint:
                 density = 600
@@ -856,8 +896,24 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
                 density = 800
             else:
                 density = MATERIAL_DENSITY
-            vol_m3 = (length_adj / 1000) * (width_adj / 1000) * (p['thickness'] / 1000) * p['qty']
-            new_weight += vol_m3 * density
+
+            widths_for_weight = p.get('widths_mm') or []
+            qty_value = p['qty']
+
+            if widths_for_weight:
+                for width_item in widths_for_weight[:qty_value]:
+                    vol_m3 = (length_adj / 1000) * (width_item / 1000) * (p['thickness'] / 1000)
+                    new_weight += vol_m3 * density
+
+                remaining_qty = max(0, qty_value - len(widths_for_weight))
+                if remaining_qty:
+                    width_adj = widths_for_weight[-1]
+                    vol_m3 = (length_adj / 1000) * (width_adj / 1000) * (p['thickness'] / 1000) * remaining_qty
+                    new_weight += vol_m3 * density
+            else:
+                width_adj = p['width_mm']
+                vol_m3 = (length_adj / 1000) * (width_adj / 1000) * (p['thickness'] / 1000) * qty_value
+                new_weight += vol_m3 * density
 
     furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
     if new_width == old_width:
@@ -884,7 +940,7 @@ def _check_material_sheet_limits(part: dict) -> Optional[str]:
     """Проверяет влезает ли деталь в стандартный лист и выдаёт предупреждение"""
     material = (part.get('material') or '').lower()
     length = part['length_mm']
-    width = part['width_mm']
+    widths = part.get('widths_mm') or [part['width_mm']]
 
     if 'лдсп' in material or 'дсп' in part['name'].lower():
         max_l, max_w = 2800, 2070
@@ -895,8 +951,9 @@ def _check_material_sheet_limits(part: dict) -> Optional[str]:
     else:
         max_l, max_w = 2800, 2070
 
-    if max(length, width) > max_l or min(length, width) > max_w:
-        return f"⚠️ {part['name']} ({length}×{width}) не влезает в лист {max_l}×{max_w} - нужна стыковка"
+    for width in widths:
+        if max(length, width) > max_l or min(length, width) > max_w:
+            return f"⚠️ {part['name']} ({length}×{width}) не влезает в лист {max_l}×{max_w} - нужна стыковка"
     return None
 
 
@@ -916,10 +973,10 @@ def _recalculate_furniture(spec: ParsedSpec, new_width: int) -> Tuple[List[dict]
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
     section_ratio = len(new_sections) / spec.sections_count if spec.sections_count > 0 else 1
 
-    old_facades = next((r.qty for r in spec.corpus_rows if 'фасад' in r.name.lower()), old_spans)
-    new_facades = math.ceil(old_facades * span_ratio)
-
     facade_row = next((r for r in spec.corpus_rows if 'фасад' in r.name.lower()), None)
+    old_facades = facade_row.qty if facade_row and facade_row.qty is not None else old_spans
+    facades_per_span = old_facades / old_spans if old_spans else old_facades
+    new_facades = math.ceil(facades_per_span * new_spans)
     facade_height = facade_row.length_mm if facade_row else 2700
     petals_per_f = _petals_per_facade(facade_height)
 
