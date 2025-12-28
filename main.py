@@ -4,6 +4,7 @@ import os
 import re
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional, List, Tuple
 
 import pandas as pd
@@ -20,14 +21,17 @@ from telegram.ext import (
 
 load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-LOG_FILE = os.getenv("LOG_FILE", "bot.log")
+LOG_FILE_ENV = os.getenv("LOG_FILE", "bot.log")
+LOG_FILE = Path(LOG_FILE_ENV) if os.path.isabs(LOG_FILE_ENV) else BASE_DIR / LOG_FILE_ENV
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        logging.FileHandler(LOG_FILE, encoding="utf-8", mode="a"),
     ],
 )
 logger = logging.getLogger("wardrobe-bot")
