@@ -83,7 +83,24 @@ class SectionType:
     has_rod: bool = False
     has_shelves: bool = False
     has_lighting: bool = False
-    shelf_count: int = 0
+    shelf_count: float = 0
+
+
+def _distribute_items_per_section(total_qty: float, sections_count: int) -> List[float]:
+    """Распределяет количество элементов по секциям, сохраняя исходное соотношение."""
+
+    if sections_count <= 0:
+        return []
+
+    base_per_section = math.floor(total_qty / sections_count)
+    remainder = int(round(total_qty - base_per_section * sections_count))
+
+    distribution = [float(base_per_section) for _ in range(sections_count)]
+
+    for i in range(remainder):
+        distribution[i % sections_count] += 1
+
+    return distribution
 
 
 def _find_sheet_by_keywords(xl, keywords: List[str]) -> Optional[str]:
@@ -678,14 +695,15 @@ def _analyze_section_types(spec: ParsedSpec) -> List[SectionType]:
     has_lighting = len(lights) > 0
 
     rods_per_section = total_rods / spec.sections_count if spec.sections_count > 0 else 0
+    shelves_distribution = _distribute_items_per_section(total_shelves, spec.sections_count) if total_shelves else []
     shelves_per_section = total_shelves / spec.sections_count if spec.sections_count > 0 else 0
 
-    for _ in range(spec.sections_count):
+    for idx in range(spec.sections_count):
         section = SectionType(
             width_mm=spec.section_width_mm,
             has_rod=(rods_per_section > 0),
             has_shelves=(shelves_per_section > 0),
-            shelf_count=int(shelves_per_section),
+            shelf_count=shelves_distribution[idx] if idx < len(shelves_distribution) else shelves_per_section,
             has_lighting=has_lighting,
         )
         sections.append(section)
@@ -719,7 +737,6 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
     section_ratio = new_sections_count / spec.sections_count if spec.sections_count else 1
 
     old_polki = next((r.qty for r in spec.corpus_rows if 'полк' in r.name.lower()), 0) or 0
-    polki_per_span = math.ceil(old_polki / old_spans) if old_spans > 0 else 6
 
     # Сопоставляем новые секции со старыми типами (пропорционально)
     section_type_map: List[SectionType] = []
@@ -735,6 +752,10 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             shelf_count=original_type.shelf_count,
         )
         section_type_map.append(new_type)
+
+    shelves_plan = [sec.shelf_count for sec in section_type_map]
+    if section_type_map:
+        logger.info(f"Карта полок по секциям (оригинальные→новые): {shelves_plan}")
 
     # Карта материалов
     material_map: Dict[str, str] = {}
@@ -762,8 +783,11 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
         new_width_part = row.width_mm or 0
 
         if 'полк' in name_low:
-            new_qty = new_spans * polki_per_span
-            new_width_part = new_width // new_spans if new_spans else new_width_part
+            shelves_from_ratio = sum(shelves_plan) if shelves_plan else 0
+            if not shelves_from_ratio and spec.sections_count:
+                shelves_from_ratio = (old_polki / spec.sections_count) * new_sections_count
+            new_qty = shelves_from_ratio or new_qty
+            new_width_part = math.ceil(new_width / new_sections_count) if new_sections_count else new_width_part
         elif 'фасад' in name_low:
             new_qty *= span_ratio
             new_width_part = new_width // new_spans if new_spans else new_width_part
