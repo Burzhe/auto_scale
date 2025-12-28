@@ -54,6 +54,43 @@ class RecalculateShelvesTest(unittest.TestCase):
 
 
 class RecalculateFacadeTest(unittest.TestCase):
+    def test_returns_original_data_when_width_is_same(self):
+        spec = ParsedSpec(
+            source_filename="test.xlsx",
+            width_total_mm=2000,
+            depth_mm=600,
+            height_mm=2400,
+            sections_count=2,
+            section_width_mm=1000,
+            corpus_rows=[
+                ParsedRow(
+                    name="Боковина",
+                    thickness_mm=16,
+                    length_mm=2400,
+                    width_mm=600,
+                    qty=2,
+                    material="ЛДСП",
+                )
+            ],
+            furniture_items=[
+                FurnitureItem(
+                    name="Петля",
+                    qty=8,
+                    unit="шт",
+                )
+            ],
+            total_weight_kg=85.5,
+        )
+
+        corpus_parts, weight, warnings, furniture_items = _recalculate_corpus(spec, new_width=2000)
+
+        self.assertEqual(1, len(corpus_parts))
+        self.assertEqual("Боковина", corpus_parts[0]["name"])
+        self.assertEqual(85.5, weight)
+        self.assertEqual([], warnings)
+        self.assertEqual(1, len(furniture_items))
+        self.assertEqual(8, furniture_items[0]["qty"])
+
     def setUp(self) -> None:
         self.spec = ParsedSpec(
             source_filename="test.xlsx",
