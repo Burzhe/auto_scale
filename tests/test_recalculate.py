@@ -4,12 +4,14 @@ import unittest
 os.environ.setdefault("BOT_TOKEN", "test-token")
 
 from main import (  # noqa: E402
+    FurnitureItem,
     ParsedRow,
     ParsedSpec,
     _calc_spans_for_section,
     _distribute_items_per_section,
     _distribute_width_evenly,
     _recalculate_corpus,
+    _recalculate_furniture,
     _split_sections,
 )
 
@@ -97,6 +99,50 @@ class RecalculateFacadeTest(unittest.TestCase):
 
         facade_part = next(p for p in corpus_parts if "фасад" in p["name"].lower())
         self.assertEqual(expected_facade_widths, facade_part["widths_mm"])
+
+
+class RecalculateFurnitureHandlesTest(unittest.TestCase):
+    def test_handles_include_scaled_drawers(self):
+        spec = ParsedSpec(
+            source_filename="test.xlsx",
+            width_total_mm=2000,
+            depth_mm=600,
+            height_mm=2400,
+            sections_count=2,
+            section_width_mm=1000,
+            corpus_rows=[
+                ParsedRow(
+                    name="Фасад",
+                    thickness_mm=18,
+                    length_mm=2300,
+                    width_mm=500,
+                    qty=4,
+                    material="МДФ",
+                ),
+                ParsedRow(
+                    name="Ящик внутренний",
+                    thickness_mm=16,
+                    length_mm=500,
+                    width_mm=400,
+                    qty=4,
+                    material="ЛДСП",
+                ),
+            ],
+            furniture_items=[
+                FurnitureItem(
+                    name="Ручка",
+                    qty=8,
+                    unit="шт",
+                )
+            ],
+            total_weight_kg=120.0,
+        )
+
+        furn_items, warnings, _ = _recalculate_furniture(spec, new_width=3000)
+
+        handles = next(f for f in furn_items if "ручк" in f["name"].lower())
+        self.assertEqual(12, handles["qty"])
+        self.assertTrue(any("учтены ящики" in w for w in warnings))
 
 
 if __name__ == "__main__":
