@@ -731,7 +731,9 @@ def _analyze_section_types(spec: ParsedSpec) -> List[SectionType]:
     return sections
 
 
-def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], float, List[str], List[dict]]:
+def _recalculate_corpus(
+    spec: ParsedSpec, new_width: int
+) -> Tuple[List[Dict], float, List[str], List[str], List[dict]]:
     old_width = spec.width_total_mm
     original_sections_types = _analyze_section_types(spec)
     new_sections = _split_sections(new_width)
@@ -753,12 +755,12 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
             for r in spec.corpus_rows
         ]
 
-        warnings: List[str] = []
+        cut_warnings: List[str] = []
         for part in corpus_parts:
             if part.get('length_mm') and part.get('width_mm'):
                 warning = _check_material_sheet_limits(part)
                 if warning:
-                    warnings.append(warning)
+                    cut_warnings.append(warning)
 
         furn_items = [
             {
@@ -773,7 +775,7 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
         return [
             part | {'widths_mm': []}
             for part in corpus_parts
-        ], spec.total_weight_kg, warnings, furn_items
+        ], spec.total_weight_kg, cut_warnings, [], furn_items
 
     old_spans = sum(_calc_spans_for_section(spec.section_width_mm) for _ in range(spec.sections_count))
     new_spans = sum(_calc_spans_for_section(w) for w in new_sections)
@@ -945,18 +947,19 @@ def _recalculate_corpus(spec: ParsedSpec, new_width: int) -> Tuple[List[Dict], f
         furn_weight = sum(f['qty'] * 0.05 for f in furn_items)
     new_weight = new_weight + furn_weight
 
-    warnings: List[str] = []
+    cut_warnings: List[str] = []
+    general_recommendations: List[str] = []
     for p in new_parts:
         warning = _check_material_sheet_limits(p)
         if warning:
-            warnings.append(warning)
+            cut_warnings.append(warning)
 
     if spec.height_mm > 2500:
-        warnings.append("⚠️ Устойчивость: добавить антиопрокидывание")
+        general_recommendations.append("⚠️ Устойчивость: добавить антиопрокидывание")
 
-    warnings.extend(furn_warnings)
+    general_recommendations.extend(furn_warnings)
 
-    return new_parts, round(new_weight, 2), warnings, furn_items
+    return new_parts, round(new_weight, 2), cut_warnings, general_recommendations, furn_items
 
 
 def _check_material_sheet_limits(part: dict) -> Optional[str]:
@@ -1266,7 +1269,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         sections = _split_sections(new_width)
-        corpus_parts, new_weight, warnings, furniture_items = _recalculate_corpus(spec, new_width)
+        corpus_parts, new_weight, cut_warnings, general_recommendations, furniture_items = _recalculate_corpus(spec, new_width)
 
         # Формируем ответ
         msg = "✅ Пересчёт завершён!\n\n"
@@ -1302,10 +1305,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 msg += f"{i}. {f['name']}{code_str}\n"
                 msg += f"   🔧 {qty_str} {unit_str}{meta_str}\n"
 
-        if warnings:
+        if cut_warnings:
             msg += "\n\n⚠️ Предупреждения по раскрою:\n"
-            for w in warnings:
+            for w in cut_warnings:
                 msg += f"  • {w}\n"
+
+        if general_recommendations:
+            msg += "\n\nℹ️ Рекомендации:\n"
+            for rec in general_recommendations:
+                msg += f"  • {rec}\n"
         
         # Разбиваем на несколько сообщений если слишком длинное
         if len(msg) > 4096:
