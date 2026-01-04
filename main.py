@@ -185,40 +185,25 @@ def _find_column_index(header_row: List[str], keywords: List[str]) -> Optional[i
 
 def _parse_material_dictionary_correct(df: pd.DataFrame) -> Dict[str, Tuple[str, Optional[int]]]:
     """
-    Парсит справочник материалов из строк 7-37 (гибкий диапазон), колонки A и B.
+    Парсит справочник материалов из строк 7-37, колонки A и F.
 
     Returns:
         Dict[код_материала, (название_материала, толщина_мм)]
     """
     material_dict: Dict[str, Tuple[str, Optional[int]]] = {}
     name_col = 0  # колонка A
-    code_col = 1  # колонка B ("Тлщн" в справочнике)
+    code_col = 5  # колонка F ("Тлщн. Матер.")
 
-    # Ищем строку заголовка по ключевому слову, чтобы диапазон был гибким
-    header_row = next((idx for idx in range(min(60, df.shape[0])) if str(df.iat[idx, name_col]).strip().lower() == "наименование"), 6)
-    start_idx = header_row + 1
-
-    empty_streak = 0
-    for idx in range(start_idx, min(df.shape[0], start_idx + 40)):  # ограничиваем разумным окном
+    for idx in range(6, 37):  # pandas-индекс: строки 7-37 включительно
         name_val = df.iat[idx, name_col] if idx < df.shape[0] else None
         code_val = df.iat[idx, code_col] if (idx < df.shape[0] and code_col < df.shape[1]) else None
-
-        if pd.isna(name_val) and pd.isna(code_val):
-            empty_streak += 1
-            if empty_streak >= 3:
-                break
-            continue
-        empty_streak = 0
 
         if pd.isna(name_val) or pd.isna(code_val):
             continue
 
         name = str(name_val).strip()
-        code_str = (
-            str(int(float(code_val)))
-            if isinstance(code_val, (int, float)) and not isinstance(code_val, bool)
-            else str(code_val).strip()
-        )
+        # Код может быть float (16.0) — нормализуем в строку без хвоста
+        code_str = str(int(float(code_val))) if isinstance(code_val, (int, float)) and not isinstance(code_val, bool) else str(code_val).strip()
         if not code_str:
             continue
 
