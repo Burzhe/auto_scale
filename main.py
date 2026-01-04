@@ -586,7 +586,24 @@ def _parse_furniture_rows(df: pd.DataFrame) -> List[FurnitureItem]:
     return items
 
 
-def _infer_geometry_smart(rows: List[ParsedRow]) -> Tuple[int, int, int, int, int]:
+def _extract_dimensions_from_cell(df: pd.DataFrame) -> Optional[Tuple[int, int, int]]:
+    """Читает габариты из ячейки A43 (индекс 42) в формате Ш*Г*В."""
+    try:
+        cell_value = df.iat[42, 0]
+        if pd.notna(cell_value) and isinstance(cell_value, str):
+            m = re.search(r"(\d{3,4})\s*[*хx×]\s*(\d{3,4})\s*[*хx×]\s*(\d{3,4})", cell_value)
+            if m:
+                width = int(m.group(1))
+                depth = int(m.group(2))
+                height = int(m.group(3))
+                logger.info(f"Габариты из A43: {width}x{depth}x{height}")
+                return width, depth, height
+    except Exception as e:
+        logger.warning(f"Не удалось прочитать габариты из A43: {e}")
+    return None
+
+
+def _infer_geometry_smart(df: pd.DataFrame, rows: List[ParsedRow]) -> Tuple[int, int, int, int, int]:
     """
     Умное определение габаритов
     1. Ищем строку с габаритом вида "3000х600х2800"
@@ -595,6 +612,15 @@ def _infer_geometry_smart(rows: List[ParsedRow]) -> Tuple[int, int, int, int, in
     """
     
     logger.info(f"Начинаем определение габаритов из {len(rows)} строк")
+
+    # Стратегия 0: фиксированная ячейка A43
+    dims = _extract_dimensions_from_cell(df)
+    if dims:
+        width_total, depth, height = dims
+        back_walls = [r for r in rows if r.name and "задн" in r.name.lower() and r.qty]
+        sections = int(back_walls[0].qty) if back_walls else 1
+        section_width = width_total // sections if sections else width_total
+        return width_total, depth, height, sections, section_width
     
     # Стратегия 1: ищем габарит в названии строки
     for row in rows:
@@ -1311,7 +1337,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         furniture_items = _parse_furniture_rows(df_furniture) if df_furniture is not None else []
         logger.info(f"Распознано {len(furniture_items)} позиций фурнитуры")
         
-        width_total, depth, height, sections, section_width = _infer_geometry_smart(corpus_rows)
+        width_total, depth, height, sections, section_width = _infer_geometry_smart(df_corpus, corpus_rows)
         total_weight = _calculate_total_weight(df_corpus)
         if not total_weight:
             total_weight = _calculate_total_weight_by_rows(corpus_rows)
