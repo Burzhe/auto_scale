@@ -82,6 +82,8 @@ class ParsedSpec:
     corpus_rows: List[ParsedRow] = field(default_factory=list)
     furniture_items: List[FurnitureItem] = field(default_factory=list)
     total_weight_kg: float = 0.0
+    base_cost: Optional[float] = None
+    final_price: Optional[float] = None
 
 
 USER_STATE: Dict[int, ParsedSpec] = {}
@@ -183,36 +185,70 @@ def _find_column_index(header_row: List[str], keywords: List[str]) -> Optional[i
     return None
 
 
+def _normalize_material_code(code_val: object) -> Optional[str]:
+    """Нормализует код материала в строку без .0."""
+    if code_val is None or pd.isna(code_val):
+        return None
+    if isinstance(code_val, (int, float)) and not isinstance(code_val, bool):
+        return str(int(float(code_val)))
+    code_str = str(code_val).strip()
+    return code_str or None
+
+
+def _extract_thickness_from_name(name: str) -> Optional[int]:
+    if not isinstance(name, str):
+        return None
+    m = re.search(r"(\d+)\s*(?:мм|mm)\b", name.lower())
+    return int(m.group(1)) if m else None
+
+
 def _parse_material_dictionary_correct(df: pd.DataFrame) -> Dict[str, Tuple[str, Optional[int]]]:
     """
-    Парсит справочник материалов из строк 7-37, колонки A и F.
+    Динамически парсит справочник материалов.
 
     Returns:
         Dict[код_материала, (название_материала, толщина_мм)]
     """
     material_dict: Dict[str, Tuple[str, Optional[int]]] = {}
     name_col = 0  # колонка A
-    code_col = 5  # колонка F ("Тлщн. Матер.")
+    code_col = 5  # колонка F
+    fallback_code_col = 1  # колонка B
 
-    for idx in range(6, 37):  # pandas-индекс: строки 7-37 включительно
-        name_val = df.iat[idx, name_col] if idx < df.shape[0] else None
-        code_val = df.iat[idx, code_col] if (idx < df.shape[0] and code_col < df.shape[1]) else None
+    collecting = False
+    start_triggers = ("плита дсп", "плитный материал")
+    stop_words = ("трудоемкость", "прямые затраты", "итого")
 
-        if pd.isna(name_val) or pd.isna(code_val):
+    for idx in range(df.shape[0]):
+        name_val = df.iat[idx, name_col] if name_col < df.shape[1] else None
+        if pd.isna(name_val):
+            if collecting:
+                continue
             continue
 
-        name = str(name_val).strip()
-        # Код может быть float (16.0) — нормализуем в строку без хвоста
-        code_str = str(int(float(code_val))) if isinstance(code_val, (int, float)) and not isinstance(code_val, bool) else str(code_val).strip()
+        name_str = str(name_val).strip()
+        name_low = name_str.lower()
+
+        if not collecting and any(trigger in name_low for trigger in start_triggers):
+            collecting = True
+            continue
+
+        if collecting and any(stop_word in name_low for stop_word in stop_words):
+            break
+
+        if not collecting:
+            continue
+
+        code_val = None
+        if code_col < df.shape[1]:
+            code_val = df.iat[idx, code_col]
+        code_str = _normalize_material_code(code_val)
+        if not code_str and fallback_code_col < df.shape[1]:
+            code_str = _normalize_material_code(df.iat[idx, fallback_code_col])
         if not code_str:
             continue
 
-        thickness_mm: Optional[int] = None
-        m = re.search(r"(\d+)\s*(?:мм|mm)\b", name.lower())
-        if m:
-            thickness_mm = int(m.group(1))
-
-        material_dict[code_str] = (name, thickness_mm if thickness_mm is not None else None)
+        thickness_mm = _extract_thickness_from_name(name_str)
+        material_dict[code_str] = (name_str, thickness_mm)
 
     logger.info(f"Справочник материалов: найдено {len(material_dict)} записей")
     return material_dict
@@ -239,7 +275,7 @@ def _apply_material_from_code(
     if pd.isna(code_val):
         return None, None
 
-    code = str(int(float(code_val))) if isinstance(code_val, (int, float)) and not isinstance(code_val, bool) else str(code_val).strip()
+    code = _normalize_material_code(code_val)
     if not code:
         return None, None
 
@@ -328,10 +364,7 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, Tupl
         width_mm = None
         qty = None
 
-        if thick_idx is not None and thick_idx < len(row):
-            material_name, thickness_mm = _apply_material_from_code(row, material_dict)
-        else:
-            material_name, thickness_mm = None, None
+        material_name, thickness_mm = _apply_material_from_code(row, material_dict)
 
         if length_idx is not None and pd.notna(row.iloc[length_idx]):
             try:
@@ -756,6 +789,49 @@ def _calculate_total_weight_by_rows(rows: List[ParsedRow]) -> float:
             weight_kg = volume_m3 * density * r.qty
             total_kg += weight_kg
     return round(total_kg, 2)
+
+
+def _calculate_base_cost(df: pd.DataFrame) -> Optional[float]:
+    """Ищет строку с 'Прямые затраты' и возвращает значение из колонки B."""
+    for r in range(df.shape[0]):
+        cell_val = df.iat[r, 0] if df.shape[1] > 0 else None
+        if pd.isna(cell_val):
+            continue
+        cell_text = str(cell_val).strip().lower()
+        if "прямые затраты" in cell_text:
+            if df.shape[1] > 1:
+                raw_val = df.iat[r, 1]
+                if pd.notna(raw_val):
+                    try:
+                        return float(str(raw_val).replace(" ", "").replace(",", "."))
+                    except Exception:
+                        pass
+        if isinstance(cell_val, str):
+            m = re.search(r"прямые затраты\s*=?\s*(\d+[.,]?\d*)", cell_val.lower())
+            if m:
+                try:
+                    return float(m.group(1).replace(",", "."))
+                except Exception:
+                    pass
+    return None
+
+
+def _calculate_final_price(base_cost: Optional[float]) -> Optional[float]:
+    if base_cost is None:
+        return None
+    if base_cost < 10_000:
+        factor = 4.0
+    elif base_cost < 30_000:
+        factor = 3.2
+    elif base_cost < 70_000:
+        factor = 2.5
+    elif base_cost < 150_000:
+        factor = 2.1
+    elif base_cost < 300_000:
+        factor = 1.8
+    else:
+        factor = 1.6
+    return round(base_cost * factor, 2)
 
 
 def _split_sections(total_width: int) -> List[int]:
@@ -1341,6 +1417,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         total_weight = _calculate_total_weight(df_corpus)
         if not total_weight:
             total_weight = _calculate_total_weight_by_rows(corpus_rows)
+        base_cost = _calculate_base_cost(df_corpus)
+        final_price = _calculate_final_price(base_cost)
         
         spec = ParsedSpec(
             source_filename=doc.file_name,
@@ -1351,7 +1429,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             section_width_mm=section_width,
             corpus_rows=corpus_rows,
             furniture_items=furniture_items,
-            total_weight_kg=total_weight
+            total_weight_kg=total_weight,
+            base_cost=base_cost,
+            final_price=final_price,
         )
         
         USER_STATE[user_id] = spec
@@ -1363,6 +1443,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         msg += f"  • Корпусных деталей: {len([r for r in corpus_rows if r.qty])} позиций\n"
         msg += f"  • Фурнитуры: {len(furniture_items)} позиций\n"
         msg += f"  • Общий вес: {total_weight} кг\n"
+        if final_price is not None:
+            msg += f"  • Итоговая цена: {final_price:.2f} ₽\n"
         msg += f"\n💬 Введи новую ширину шкафа в мм (например: 3600)"
         
         await update.message.reply_text(msg)
@@ -1414,6 +1496,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         msg += f"  • Было: {spec.total_weight_kg} кг\n"
         msg += f"  • Стало: {new_weight} кг\n"
         msg += f"  • Разница: {new_weight - spec.total_weight_kg:+.2f} кг\n"
+        if spec.final_price is not None:
+            msg += f"\n💰 Итоговая цена: {spec.final_price:.2f} ₽\n"
         
         msg += f"\n\n🔨 КОРПУСНЫЕ ДЕТАЛИ ({len(corpus_parts)} поз.):\n"
         for i, p in enumerate(corpus_parts, 1):
