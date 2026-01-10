@@ -209,47 +209,71 @@ def _extract_thickness_from_name(name: str) -> Optional[int]:
     return None
 
 
-def _parse_material_dictionary_correct(df: pd.DataFrame) -> Dict[str, str]:
+def _parse_material_dictionary_correct(df: pd.DataFrame) -> Dict[str, Tuple[str, Optional[int]]]:
     """
-    Парсит справочник материалов.
+    Парсит справочник материалов согласно вашей логике:
+    - Колонка A: полное название материала
+    - Колонка F (индекс 5): ID материала
 
     Returns:
-        Dict[код_материала, полное_название]
+        Dict[ID_материала, (название, толщина_мм)]
     """
-    material_dict: Dict[str, str] = {}
-    name_col = 0  # колонка A
-    code_col = 5  # колонка F
+    material_dict: Dict[str, Tuple[str, Optional[int]]] = {}
 
-    collecting = False
-    start_trigger = "плита дсп"
-    stop_trigger = "трудоемкость"
+    # Ищем начало справочника - первую строку где колонка F содержит число
+    start_row = None
+    for idx in range(min(50, df.shape[0])):
+        if df.shape[1] > 5:
+            val_f = df.iat[idx, 5]
+            val_a = df.iat[idx, 0]
+            if pd.notna(val_f) and pd.notna(val_a):
+                try:
+                    float(val_f)
+                    if isinstance(val_a, str) and len(str(val_a).strip()) > 3:
+                        start_row = idx
+                        logger.info(f"Начало справочника материалов на строке {idx}")
+                        break
+                except Exception:
+                    pass
 
-    for idx in range(df.shape[0]):
-        name_val = df.iat[idx, name_col] if name_col < df.shape[1] else None
+    if start_row is None:
+        logger.warning("Не найден справочник материалов")
+        return material_dict
+
+    stop_words = ["трудоемкость", "прямые затраты", "итого", "тлщн", "наименование детали"]
+
+    for idx in range(start_row, min(start_row + 100, df.shape[0])):
+        name_val = df.iat[idx, 0] if df.shape[1] > 0 else None
+
         if pd.isna(name_val):
-            if collecting:
-                continue
             continue
 
         name_str = str(name_val).strip()
         name_low = name_str.lower()
 
-        if not collecting and start_trigger in name_low:
-            collecting = True
-            continue
-
-        if collecting and stop_trigger in name_low:
+        if any(stop in name_low for stop in stop_words):
+            logger.info(f"Конец справочника материалов на строке {idx}: {name_str}")
             break
 
-        if not collecting:
+        if name_low in ["пластик", "ткань", "фурнитура", "комплектующие"]:
             continue
 
-        code_val = df.iat[idx, code_col] if code_col < df.shape[1] else None
+        code_val = df.iat[idx, 5] if df.shape[1] > 5 else None
         code_str = _normalize_material_code(code_val)
+
         if not code_str:
             continue
 
-        material_dict[code_str] = name_str
+        thickness_mm = _extract_thickness_from_name(name_str)
+
+        if not thickness_mm:
+            try:
+                thickness_mm = int(float(code_str))
+            except Exception:
+                pass
+
+        material_dict[code_str] = (name_str, thickness_mm)
+        logger.debug(f"Материал: ID={code_str}, название={name_str}, толщина={thickness_mm}мм")
 
     logger.info(f"Справочник материалов: найдено {len(material_dict)} записей")
     return material_dict
@@ -271,14 +295,16 @@ def _extract_thickness_from_reference(
 
 def _apply_material_from_code(
     row: pd.Series,
-    material_dict: Dict[str, str],
+    material_dict: Dict[str, Tuple[str, Optional[int]]],
 ) -> Tuple[Optional[str], Optional[int]]:
     """
-    Определяет материал и толщину детали по коду из столбца B.
+    Определяет материал и толщину детали по ID из столбца B.
+
+    ВАЖНО: Колонка B содержит ID материала из справочника, а НЕ толщину!
 
     Args:
         row: строка из таблицы деталей
-        material_dict: словарь материалов
+        material_dict: словарь {ID: (название, толщина)}
 
     Returns:
         (название_материала, толщина_мм)
@@ -286,19 +312,23 @@ def _apply_material_from_code(
     if row is None or row.shape[0] < 2:
         return None, None
 
-    code_val = row.iloc[1]
-    if pd.isna(code_val):
+    material_id_val = row.iloc[1]
+    if pd.isna(material_id_val):
         return None, None
 
-    code = _normalize_material_code(code_val)
-    if not code:
+    material_id = _normalize_material_code(material_id_val)
+
+    if not material_id:
         return None, None
 
-    material_name = material_dict.get(code)
-    if material_name:
-        thickness_mm = _extract_thickness_from_reference(material_name, code)
+    material_info = material_dict.get(material_id)
+
+    if material_info:
+        material_name, thickness_mm = material_info
+        logger.debug(f"Найден материал по ID {material_id}: {material_name}, {thickness_mm}мм")
         return material_name, thickness_mm
 
+    logger.warning(f"Материал с ID {material_id} не найден в справочнике")
     return None, None
 
 
@@ -351,7 +381,9 @@ def _determine_material(name: str, thickness_mm: Optional[int], row_context: Opt
     return material
 
 
-def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, str]) -> List[ParsedRow]:
+def _parse_corpus_rows_by_header(
+    df: pd.DataFrame, material_dict: Dict[str, Tuple[str, Optional[int]]]
+) -> List[ParsedRow]:
     """Парсит корпусные детали по явной строке заголовка."""
     rows: List[ParsedRow] = []
     start_row: Optional[int] = None
@@ -366,10 +398,11 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, str]
         ):
             start_row = r + 1
             header_row = df.iloc[r]
-            logger.info(f"Найдена строка заголовков корпуса на позиции {r}: {row_str[:80]}")
+            logger.info(f"Найдена строка заголовков корпуса на позиции {r}")
             break
 
     if start_row is None or header_row is None:
+        logger.warning("Не найдена строка заголовков таблицы деталей")
         return rows
 
     header = header_row.astype(str).str.lower().tolist()
@@ -379,19 +412,32 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, str]
     width_idx = next((i for i, h in enumerate(header) if "ширина" in h), None)
     qty_idx = next((i for i, h in enumerate(header) if "кол-во" in h or "кол" in h), None)
 
+    logger.info(
+        "Индексы колонок: name=%s, thick(ID)=%s, length=%s, width=%s, qty=%s",
+        name_idx,
+        thick_idx,
+        length_idx,
+        width_idx,
+        qty_idx,
+    )
+
     for r in range(start_row, df.shape[0]):
         row = df.iloc[r]
-        row_str = " ".join(str(x) for x in row.tolist())
+
         name = str(row.iloc[name_idx]).strip() if name_idx < len(row) else ""
+
         if not name or name.lower() in ["nan", "итого", "пластик", "ткань", "фурнитура"] or pd.isna(name):
             continue
 
-        thickness_mm = None
+        if any(kw in name.lower() for kw in ["итого", "всего", "трудоемкость", "затраты"]):
+            logger.info(f"Достигнут конец таблицы деталей на строке {r}: {name}")
+            break
+
+        material_name, thickness_mm = _apply_material_from_code(row, material_dict)
+
         length_mm = None
         width_mm = None
         qty = None
-
-        material_name, thickness_mm = _apply_material_from_code(row, material_dict)
 
         if length_idx is not None and pd.notna(row.iloc[length_idx]):
             try:
@@ -411,7 +457,8 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, str]
             except Exception:
                 pass
 
-        material = material_name or _determine_material(name, thickness_mm, row_str)
+        if not material_name:
+            material_name = _determine_material(name, thickness_mm, " ".join(str(x) for x in row.tolist()))
 
         if thickness_mm and length_mm and width_mm and qty:
             rows.append(
@@ -421,14 +468,34 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, str]
                     length_mm=length_mm,
                     width_mm=width_mm,
                     qty=qty,
-                    material=material,
+                    material=material_name,
                 )
+            )
+            logger.debug(
+                "Деталь: %s, %s, %sмм, %s×%s, qty=%s",
+                name,
+                material_name,
+                thickness_mm,
+                length_mm,
+                width_mm,
+                qty,
+            )
+        else:
+            logger.warning(
+                "Пропущена деталь '%s': недостаточно данных (толщина=%s, размеры=%sx%s, qty=%s)",
+                name,
+                thickness_mm,
+                length_mm,
+                width_mm,
+                qty,
             )
 
     return rows
 
 
-def _parse_corpus_rows_heuristic(df: pd.DataFrame, material_dict: Dict[str, str]) -> List[ParsedRow]:
+def _parse_corpus_rows_heuristic(
+    df: pd.DataFrame, material_dict: Dict[str, Tuple[str, Optional[int]]]
+) -> List[ParsedRow]:
     """
     Парсит корпусные детали из таблицы.
     Улучшенная версия: ищет строку с "Тлщн" или "Толщ" как начало таблицы
@@ -584,17 +651,43 @@ def _parse_corpus_rows_heuristic(df: pd.DataFrame, material_dict: Dict[str, str]
 
 
 def _parse_corpus_rows(df: pd.DataFrame) -> List[ParsedRow]:
+    """Основная функция парсинга с детальным логированием"""
+    logger.info("=" * 60)
+    logger.info("НАЧАЛО ПАРСИНГА КОРПУСНЫХ ДЕТАЛЕЙ")
+    logger.info("=" * 60)
+
     material_dict = _parse_material_dictionary_correct(df)
-    rows = _parse_corpus_rows_by_header(df, material_dict)
-    if rows:
-        logger.info(f"Парсинг по заголовку собрал {len(rows)} деталей")
+
+    if not material_dict:
+        logger.error("КРИТИЧЕСКАЯ ОШИБКА: Справочник материалов пуст!")
+        logger.error("Первые 30 строк файла:")
+        for i in range(min(30, df.shape[0])):
+            logger.error("Row %s: %s", i, df.iloc[i, :6].tolist())
     else:
-        logger.info("Парсинг по заголовку не сработал, пробуем эвристику")
+        logger.info("Справочник материалов загружен: %s записей", len(material_dict))
+        for mat_id, (mat_name, thickness) in material_dict.items():
+            logger.info("  ID %s: %s (%sмм)", mat_id, mat_name, thickness)
+
+    rows = _parse_corpus_rows_by_header(df, material_dict)
+
+    if rows:
+        logger.info("✓ Парсинг по заголовку собрал %s деталей", len(rows))
+    else:
+        logger.warning("✗ Парсинг по заголовку не дал результатов, пробуем эвристику")
         rows = _parse_corpus_rows_heuristic(df, material_dict)
+
+        if rows:
+            logger.info("✓ Эвристический парсинг собрал %s деталей", len(rows))
+        else:
+            logger.error("✗ НЕ УДАЛОСЬ РАСПОЗНАТЬ НИ ОДНОЙ ДЕТАЛИ!")
 
     for r in rows:
         if r.name and "фанера" in r.name.lower() and not r.material:
             r.material = "фанера"
+
+    logger.info("=" * 60)
+    logger.info("ИТОГО РАСПОЗНАНО: %s деталей", len(rows))
+    logger.info("=" * 60)
 
     return rows
 
