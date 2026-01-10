@@ -46,8 +46,8 @@ MAX_SHELF_SPAN = 800
 MAX_FACADE_WIDTH = 600
 PARTITION_THRESHOLD = 800
 
-# Типичная плотность ДСП/МДФ (кг/м³)
-MATERIAL_DENSITY = 750
+# Плотность по умолчанию (кг/м³)
+MATERIAL_DENSITY = 720
 # Добавляем русскую х и звездочку
 SIZE_RE = re.compile(r"(\d+)\s*[xх×*]\s*(\d+)", re.IGNORECASE)
 ГАБАРИТ_RE = re.compile(r"(\d{3,4})\s*[xх×*]\s*(\d+)\s*[xх×*]\s*(\d+)", re.IGNORECASE)
@@ -199,24 +199,30 @@ def _extract_thickness_from_name(name: str) -> Optional[int]:
     if not isinstance(name, str):
         return None
     m = re.search(r"(\d+)\s*(?:мм|mm)\b", name.lower())
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    fallback = re.search(r"\b(\d{1,3})\b", name)
+    if fallback:
+        candidate = int(fallback.group(1))
+        if 3 <= candidate <= 60:
+            return candidate
+    return None
 
 
-def _parse_material_dictionary_correct(df: pd.DataFrame) -> Dict[str, Tuple[str, Optional[int]]]:
+def _parse_material_dictionary_correct(df: pd.DataFrame) -> Dict[str, str]:
     """
-    Динамически парсит справочник материалов.
+    Парсит справочник материалов.
 
     Returns:
-        Dict[код_материала, (название_материала, толщина_мм)]
+        Dict[код_материала, полное_название]
     """
-    material_dict: Dict[str, Tuple[str, Optional[int]]] = {}
+    material_dict: Dict[str, str] = {}
     name_col = 0  # колонка A
     code_col = 5  # колонка F
-    fallback_code_col = 1  # колонка B
 
     collecting = False
-    start_triggers = ("плита дсп", "плитный материал")
-    stop_words = ("трудоемкость", "прямые затраты", "итого")
+    start_trigger = "плита дсп"
+    stop_trigger = "трудоемкость"
 
     for idx in range(df.shape[0]):
         name_val = df.iat[idx, name_col] if name_col < df.shape[1] else None
@@ -228,35 +234,44 @@ def _parse_material_dictionary_correct(df: pd.DataFrame) -> Dict[str, Tuple[str,
         name_str = str(name_val).strip()
         name_low = name_str.lower()
 
-        if not collecting and any(trigger in name_low for trigger in start_triggers):
+        if not collecting and start_trigger in name_low:
             collecting = True
             continue
 
-        if collecting and any(stop_word in name_low for stop_word in stop_words):
+        if collecting and stop_trigger in name_low:
             break
 
         if not collecting:
             continue
 
-        code_val = None
-        if code_col < df.shape[1]:
-            code_val = df.iat[idx, code_col]
+        code_val = df.iat[idx, code_col] if code_col < df.shape[1] else None
         code_str = _normalize_material_code(code_val)
-        if not code_str and fallback_code_col < df.shape[1]:
-            code_str = _normalize_material_code(df.iat[idx, fallback_code_col])
         if not code_str:
             continue
 
-        thickness_mm = _extract_thickness_from_name(name_str)
-        material_dict[code_str] = (name_str, thickness_mm)
+        material_dict[code_str] = name_str
 
     logger.info(f"Справочник материалов: найдено {len(material_dict)} записей")
     return material_dict
 
 
+def _extract_thickness_from_reference(
+    material_name: Optional[str],
+    reference_id: Optional[str],
+) -> Optional[int]:
+    thickness_mm = _extract_thickness_from_name(material_name or "")
+    if thickness_mm:
+        return thickness_mm
+    if reference_id:
+        match = re.search(r"\d{1,3}", str(reference_id))
+        if match:
+            return int(match.group(0))
+    return None
+
+
 def _apply_material_from_code(
     row: pd.Series,
-    material_dict: Dict[str, Tuple[str, Optional[int]]],
+    material_dict: Dict[str, str],
 ) -> Tuple[Optional[str], Optional[int]]:
     """
     Определяет материал и толщину детали по коду из столбца B.
@@ -279,9 +294,10 @@ def _apply_material_from_code(
     if not code:
         return None, None
 
-    material_info = material_dict.get(code)
-    if material_info:
-        return material_info
+    material_name = material_dict.get(code)
+    if material_name:
+        thickness_mm = _extract_thickness_from_reference(material_name, code)
+        return material_name, thickness_mm
 
     return None, None
 
@@ -299,6 +315,17 @@ def _infer_material(name: str, material_value: Optional[str] = None) -> Optional
         if "лдсп" in text or "дсп" in text:
             return "лдсп"
     return material_value.strip() if isinstance(material_value, str) and material_value.strip() else None
+
+
+def _material_density_from_name(material_name: Optional[str]) -> int:
+    material_low = (material_name or "").lower()
+    if "мдф" in material_low:
+        return 780
+    if "лдсп" in material_low or "дсп" in material_low:
+        return 680
+    if "хдф" in material_low or "двп" in material_low:
+        return 850
+    return MATERIAL_DENSITY
 
 
 def _determine_material(name: str, thickness_mm: Optional[int], row_context: Optional[str] = None) -> str:
@@ -324,7 +351,7 @@ def _determine_material(name: str, thickness_mm: Optional[int], row_context: Opt
     return material
 
 
-def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, Tuple[str, Optional[int]]]) -> List[ParsedRow]:
+def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, str]) -> List[ParsedRow]:
     """Парсит корпусные детали по явной строке заголовка."""
     rows: List[ParsedRow] = []
     start_row: Optional[int] = None
@@ -401,7 +428,7 @@ def _parse_corpus_rows_by_header(df: pd.DataFrame, material_dict: Dict[str, Tupl
     return rows
 
 
-def _parse_corpus_rows_heuristic(df: pd.DataFrame, material_dict: Dict[str, Tuple[str, Optional[int]]]) -> List[ParsedRow]:
+def _parse_corpus_rows_heuristic(df: pd.DataFrame, material_dict: Dict[str, str]) -> List[ParsedRow]:
     """
     Парсит корпусные детали из таблицы.
     Улучшенная версия: ищет строку с "Тлщн" или "Толщ" как начало таблицы
@@ -778,13 +805,7 @@ def _calculate_total_weight_by_rows(rows: List[ParsedRow]) -> float:
     total_kg = 0.0
     for r in rows:
         if r.length_mm and r.width_mm and r.thickness_mm and r.qty:
-            material_hint = f"{r.name} {r.material or ''}".lower()
-            if "фанер" in material_hint:
-                density = 600
-            elif "мдф" in material_hint:
-                density = 800
-            else:
-                density = MATERIAL_DENSITY
+            density = _material_density_from_name(r.material)
             volume_m3 = (r.length_mm / 1000) * (r.width_mm / 1000) * (r.thickness_mm / 1000)
             weight_kg = volume_m3 * density * r.qty
             total_kg += weight_kg
@@ -1088,13 +1109,7 @@ def _recalculate_corpus(
     for p in new_parts:
         if p['thickness'] and p['length_mm'] and p['qty'] and (p['width_mm'] or p.get('widths_mm')):
             length_adj = p['length_mm']
-            material_hint = f"{p['name']} {p.get('material') or ''}".lower()
-            if 'фанер' in material_hint:
-                density = 600
-            elif 'мдф' in material_hint:
-                density = 800
-            else:
-                density = MATERIAL_DENSITY
+            density = _material_density_from_name(p.get('material'))
 
             widths_for_weight = p.get('widths_mm') or []
             qty_value = p['qty']
@@ -1115,11 +1130,6 @@ def _recalculate_corpus(
                 new_weight += vol_m3 * density
 
     furn_items, furn_warnings, _ = _recalculate_furniture(spec, new_width)
-    if new_width == old_width:
-        furn_weight = sum(f.qty * 0.05 for f in spec.furniture_items)
-    else:
-        furn_weight = sum(f['qty'] * 0.05 for f in furn_items)
-    new_weight = new_weight + furn_weight
 
     cut_warnings: List[str] = []
     general_recommendations: List[str] = []
