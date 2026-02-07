@@ -339,6 +339,7 @@
             <div class="muted">Кликните по строке, чтобы увидеть источники.</div>
           </div>
           <div id="calc-debug-panel" class="calc-debug hidden">
+            <div id="calc-debug-meta" class="calc-debug-meta"></div>
             <div id="calc-debug-title" class="calc-debug-title">Источники</div>
             <ul id="calc-debug-list" class="calc-debug-list"></ul>
           </div>
@@ -416,20 +417,123 @@
     }
 
     function inferSectionCount(spec) {
-      const backQty = spec.corpus.reduce((sum, part) => {
-        return inferPartType(part.name) === 'back' ? sum + (part.qty || 0) : sum;
-      }, 0);
-      if (backQty > 0) {
-        return Math.max(1, Math.round(backQty));
-      }
-      const partitionsQty = spec.corpus.reduce((sum, part) => {
+      const baseParts = spec.baseParts || [];
+      const hasBaseParts = baseParts.length > 0;
+      const parts = hasBaseParts ? baseParts : (spec.corpus || []);
+      const partitionsQty = parts.reduce((sum, part) => {
         return inferPartType(part.name) === 'partition' ? sum + (part.qty || 0) : sum;
       }, 0);
       if (partitionsQty > 0) {
         return Math.max(1, Math.round(partitionsQty) + 1);
       }
-      const fallback = splitSections(spec.dims.width || 0).length;
-      return fallback || 1;
+      return hasBaseParts ? 1 : (splitSections(spec.dims.width || 0).length || 1);
+    }
+
+    function getBaseStructureFromParts(parts) {
+      const shelves = parts.reduce((sum, part) => {
+        return String(part.name || '').toLowerCase().includes('полк')
+          ? sum + (part.qty || 0)
+          : sum;
+      }, 0);
+      const partitions = parts.reduce((sum, part) => {
+        const name = String(part.name || '').toLowerCase();
+        if (name.includes('перегород') || name.includes('боков')) {
+          return sum + (part.qty || 0);
+        }
+        return sum;
+      }, 0);
+      return {
+        sections: partitions > 0 ? partitions + 1 : null,
+        partitions: partitions > 0 ? partitions : null,
+        shelves,
+      };
+    }
+
+    function calculateWeightFromBreakdown(parts) {
+      let total = 0;
+      parts.forEach((part) => {
+        if (!part.area_m2 || !part.thickness) return;
+        total += 730 * part.area_m2 * (part.thickness / 1000);
+      });
+      return Math.round(total * 100) / 100;
+    }
+
+    function buildScaledPartsFromBreakdown(spec, newWidth, newDepth, newHeight, overrides = {}) {
+      const baseParts = spec.baseParts || [];
+      if (!baseParts.length) return null;
+      const baseWidth = spec.dims.width || newWidth;
+      const baseDepth = spec.dims.depth || newDepth;
+      const baseHeight = spec.dims.height || newHeight;
+      const rw = baseWidth ? newWidth / baseWidth : 1;
+      const rd = baseDepth ? newDepth / baseDepth : 1;
+      const rh = baseHeight ? newHeight / baseHeight : 1;
+      const overrideShelves = Number(overrides.shelfCount || 0);
+      const overrideSections = Number(overrides.sectionCount || 0);
+      const structure = getBaseStructureFromParts(baseParts);
+      const sections = overrideSections || structure.sections || null;
+
+      return baseParts.map((part) => {
+        const type = inferPartType(part.name);
+        const baseLength = Number(part.length_mm || 0);
+        const baseWidthMm = Number(part.width_mm || 0);
+        let lengthMm = baseLength;
+        let widthMm = baseWidthMm;
+        let qty = Number(part.qty || 0);
+        const baseArea = baseLength && baseWidthMm && qty
+          ? (baseLength * baseWidthMm / 1e6) * qty
+          : (part.area_m2 || 0);
+
+        if (type === 'shelf') {
+          lengthMm = Math.round(baseLength * rw);
+          widthMm = Math.round(baseWidthMm * rd);
+          qty = overrideShelves > 0 ? overrideShelves : qty;
+        } else if (type === 'side') {
+          lengthMm = Math.round(baseLength * rh);
+          widthMm = Math.round(baseWidthMm * rd);
+        } else if (type === 'base') {
+          lengthMm = Math.round(baseLength * rw);
+          widthMm = Math.round(baseWidthMm * rd);
+        } else if (type === 'partition') {
+          lengthMm = Math.round(baseLength * rh);
+          widthMm = Math.round(baseWidthMm * rd);
+          if (sections) {
+            qty = Math.max(sections - 1, 0);
+          }
+        } else if (type === 'back') {
+          lengthMm = Math.round(baseLength * rh);
+          if (qty > 1 && baseWidthMm * qty > 0) {
+            const baseTotal = baseWidthMm * qty;
+            const ratio = baseWidth ? baseTotal / baseWidth : 1;
+            if (ratio > 0.85 && ratio < 1.15) {
+              widthMm = Math.round(newWidth / qty);
+            } else {
+              widthMm = Math.round(baseWidthMm * rw);
+            }
+          } else {
+            widthMm = Math.round(baseWidthMm * rw);
+          }
+          if (sections && qty > 1) {
+            qty = sections;
+          }
+        } else {
+          lengthMm = Math.round(baseLength * rw);
+          widthMm = Math.round(baseWidthMm * rd);
+        }
+
+        const area = lengthMm && widthMm && qty
+          ? (lengthMm * widthMm / 1e6) * qty
+          : 0;
+
+        return {
+          ...part,
+          base_area_m2: baseArea || null,
+          base_cost: Number(part.cost || 0),
+          length_mm: lengthMm || null,
+          width_mm: widthMm || null,
+          qty,
+          area_m2: area || null,
+        };
+      });
     }
 
     function recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides = {}, enforceRules = false) {
@@ -843,7 +947,31 @@
       const { type, payload } = event.data;
       if (type === 'calculate') {
         const { spec, newWidth, newDepth, newHeight, overrides, enforceRules, otherDriver } = payload;
-        const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides, enforceRules);
+        const scaledParts = buildScaledPartsFromBreakdown(spec, newWidth, newDepth, newHeight, overrides);
+        const useBreakdown = Array.isArray(scaledParts) && scaledParts.length > 0;
+        const corpusResult = useBreakdown
+          ? (() => {
+              const structure = getBaseStructureFromParts(scaledParts);
+              const sectionCount = structure.sections || 1;
+              const sections = sectionCount > 0 ? distributeEvenly(newWidth, sectionCount) : [newWidth];
+              return {
+                corpus: scaledParts.map((part) => ({
+                  name: part.name,
+                  length_mm: part.length_mm,
+                  width_mm: part.width_mm,
+                  thickness: part.thickness,
+                  qty: part.qty,
+                  material: part.material || '',
+                })),
+                warnings: [],
+                sectionCount,
+                sections,
+                spansPerSection: sections.map(calcSpansForSection),
+                totalShelves: structure.shelves || 0,
+                partitionCount: structure.partitions || 0,
+              };
+            })()
+          : recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides, enforceRules);
         const furnitureResult = recalculateFurniture(spec, corpusResult, newHeight);
         const updatedSpec = {
           ...spec,
@@ -851,7 +979,9 @@
           furniture: furnitureResult.furniture,
           dims: { width: newWidth, depth: newDepth, height: newHeight },
         };
-        const weight = calculateWeight(updatedSpec.corpus);
+        const weight = useBreakdown
+          ? calculateWeightFromBreakdown(scaledParts)
+          : calculateWeight(updatedSpec.corpus);
         const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
         const baseHardwareCostFallback = calculateFurnitureCost(spec.furniture || []);
         const calcSummary = spec.calcSummary || {};
@@ -872,7 +1002,17 @@
         const newMaterialsFallback = calculatePrice(updatedSpec.corpus, spec.materials || {});
         const rateInfo = calcSummary.rates?.dsp;
         const canUseRates = Boolean(calcSummary.breakdown?.dsp?.usable && rateInfo?.avgRate);
-        const newDspCost = canUseRates ? calculateDspCostFromRates(updatedSpec.corpus, rateInfo) : newMaterialsFallback;
+        let newDspCost = canUseRates ? calculateDspCostFromRates(updatedSpec.corpus, rateInfo) : newMaterialsFallback;
+        if (useBreakdown) {
+          newDspCost = scaledParts.reduce((sum, part) => {
+            const baseArea = Number(part.base_area_m2 || 0);
+            const baseCost = Number(part.base_cost || 0);
+            if (!baseArea) return sum;
+            const unitRate = baseCost / baseArea;
+            const newArea = part.area_m2 || 0;
+            return sum + (unitRate * newArea);
+          }, 0);
+        }
         const baseDspForRatio = baseDspCost > 0 ? baseDspCost : baseMaterialsCost;
         const areaRatio = baseDspForRatio > 0 ? newDspCost / baseDspForRatio : 1;
 

@@ -300,6 +300,102 @@ function isBlankCell(cell) {
   return false;
 }
 
+function detectMaterialTable(sheet) {
+  if (!sheet) return null;
+  const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+  const maxRows = Math.min(json.length, 200);
+  let best = null;
+  let bestScore = 0;
+
+  const pickBest = (rowIndex, mapping, score) => {
+    if (score > bestScore) {
+      bestScore = score;
+      best = { rowIndex, mapping };
+    }
+  };
+
+  for (let row = 0; row < maxRows; row += 1) {
+    const rowData = json[row] || [];
+    const normalized = rowData.map((cell) => normalizeLabelText(cell));
+    let nameCol = null;
+    let thicknessCol = null;
+    let lengthCol = null;
+    let widthCol = null;
+    let qtyCol = null;
+
+    normalized.forEach((text, idx) => {
+      if (!text) return;
+      if (text.includes('наимен')) nameCol = idx;
+      if (text.includes('толщ') || text.includes('тлщн')) thicknessCol = idx;
+      if (text.includes('длин')) lengthCol = idx;
+      if (text.includes('ширин')) widthCol = idx;
+      if (text.includes('кол')) qtyCol = idx;
+    });
+
+    let score = 0;
+    if (nameCol !== null) score += 2;
+    if (lengthCol !== null) score += 1;
+    if (widthCol !== null) score += 1;
+    if (qtyCol !== null) score += 1;
+    if (thicknessCol !== null) score += 0.5;
+
+    if (score >= 4) {
+      pickBest(row + 1, {
+        nameCol,
+        thicknessCol,
+        lengthCol,
+        widthCol,
+        qtyCol,
+      }, score);
+    }
+  }
+
+  let headerRow = best?.rowIndex || null;
+  let colMap = best?.mapping || null;
+
+  if (!headerRow) {
+    const fallbackRow = 50;
+    headerRow = fallbackRow;
+    colMap = {
+      nameCol: 0,
+      thicknessCol: 1,
+      lengthCol: 2,
+      widthCol: 3,
+      qtyCol: 8,
+    };
+  }
+
+  let totalsRow = null;
+  const scanStart = Math.max(headerRow, 1);
+  for (let row = scanStart; row < Math.min(scanStart + 60, json.length); row += 1) {
+    const rowData = json[row] || [];
+    const rowText = rowData.map((cell) => normalizeLabelText(cell)).join(' ');
+    if (rowText.includes('итого')) {
+      totalsRow = row + 1;
+      break;
+    }
+  }
+
+  let detailsStartRow = headerRow + 1;
+  let detailsEndRow = totalsRow ? totalsRow - 1 : detailsStartRow + 20;
+
+  if (!totalsRow && detailsStartRow === 51) {
+    totalsRow = 66;
+    detailsEndRow = 65;
+  }
+
+  const confidence = bestScore >= 4;
+
+  return {
+    detailsStartRow,
+    detailsEndRow,
+    totalsRow,
+    colMap,
+    headerRow,
+    confidence,
+  };
+}
+
 function findCalcSummaryAnchors(workbook) {
   const labels = {
     вескг: 'weightRef',
@@ -374,6 +470,65 @@ function findCalcSummaryAnchors(workbook) {
     });
   });
   return anchors;
+}
+
+function getNonZeroCostColumns(workbook, dspTotalRef, totalsRow) {
+  const resolved = resolveAnchorFormula(workbook, dspTotalRef);
+  if (!resolved) {
+    return {
+      costCols: [],
+      allRefs: [],
+      refsWithValues: [],
+      warning: 'Не удалось получить формулу итога ДСП.',
+    };
+  }
+  const refs = extractRefsFromFormula(resolved.formula);
+  const expandedRefs = [];
+  refs.forEach((rawRef) => {
+    const normalized = normalizeFormulaRef(rawRef, resolved.sheetName);
+    if (!normalized.sheetName || !normalized.ref) return;
+    if (normalized.ref.includes(':')) {
+      expandedRefs.push(...expandRangeRefs(normalized.ref, normalized.sheetName));
+    } else {
+      expandedRefs.push(`${normalized.sheetName}!${normalized.ref}`);
+    }
+  });
+
+  const refsWithValues = [];
+  const cols = new Set();
+  const allCols = new Set();
+  expandedRefs.forEach((fullRef) => {
+    const parsed = parseRef(fullRef);
+    if (!parsed) return;
+    const sheet = workbook.Sheets[parsed.sheetName];
+    if (!sheet) return;
+    const decoded = XLSX.utils.decode_cell(parsed.cellRef);
+    if (totalsRow && decoded.r + 1 !== totalsRow) return;
+    const cell = sheet[parsed.cellRef];
+    const value = parseNumericValue(cell?.v);
+    const colIndex = decoded.c;
+    allCols.add(colIndex);
+    refsWithValues.push({
+      ref: `${colIndexToLetter(colIndex)}${decoded.r + 1}`,
+      value: Number.isFinite(value) ? value : 0,
+      colIndex,
+    });
+    if (Number.isFinite(value) && Math.abs(value) > 0.0001) {
+      cols.add(colIndex);
+    }
+  });
+
+  const costCols = [...cols];
+  const warning = costCols.length === 0
+    ? 'Все итоги по ДСП нулевые — использую все колонки из формулы.'
+    : null;
+
+  return {
+    costCols: costCols.length ? costCols : [...allCols],
+    allRefs: expandedRefs,
+    refsWithValues,
+    warning,
+  };
 }
 
 function extractRefsFromFormula(formulaString) {
@@ -554,6 +709,122 @@ function readSheetCellValue(sheet, rowIndex, colIndex) {
   if (!sheet || !Number.isInteger(rowIndex) || !Number.isInteger(colIndex) || colIndex < 0) return undefined;
   const cellRef = XLSX.utils.encode_cell({ r: rowIndex - 1, c: colIndex });
   return sheet[cellRef];
+}
+
+function inferAreaColumn(sheet, costColIndex, detailsStartRow, totalsRow) {
+  if (!sheet || costColIndex === null || costColIndex === undefined) return null;
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+  const maxCol = range.e.c;
+  const checkColumn = (colIndex) => {
+    if (colIndex < 0 || colIndex > maxCol) return false;
+    const totalsCell = totalsRow ? readSheetCellValue(sheet, totalsRow, colIndex) : null;
+    const totalsValue = parseNumericValue(totalsCell?.v);
+    if (!Number.isFinite(totalsValue) || totalsValue <= 0) return false;
+    let hits = 0;
+    for (let row = detailsStartRow; row < Math.min(detailsStartRow + 10, totalsRow || detailsStartRow + 10); row += 1) {
+      const cell = readSheetCellValue(sheet, row, colIndex);
+      const value = parseNumericValue(cell?.v);
+      if (Number.isFinite(value) && value > 0) hits += 1;
+    }
+    return hits >= 2;
+  };
+
+  const defaultIndex = costColIndex - 1;
+  if (checkColumn(defaultIndex)) return defaultIndex;
+
+  for (let offset = 2; offset <= 6; offset += 1) {
+    const candidate = costColIndex - offset;
+    if (checkColumn(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+function buildDspBreakdownFromTotals(sheet, tableInfo, costCols) {
+  if (!sheet || !tableInfo || !costCols || costCols.length === 0) return null;
+  const {
+    detailsStartRow,
+    detailsEndRow,
+    totalsRow,
+    colMap,
+  } = tableInfo;
+  if (!detailsStartRow || !detailsEndRow || !colMap) return null;
+
+  const areaColMap = new Map();
+  costCols.forEach((costColIndex) => {
+    const areaColIndex = inferAreaColumn(sheet, costColIndex, detailsStartRow, totalsRow);
+    if (areaColIndex !== null && areaColIndex !== undefined) {
+      areaColMap.set(costColIndex, areaColIndex);
+    }
+  });
+
+  const details = [];
+  for (let rowIndex = detailsStartRow; rowIndex <= detailsEndRow; rowIndex += 1) {
+    const nameRaw = readSheetCell(sheet, rowIndex, colMap.nameCol);
+    const qty = parseNumericValue(readSheetCell(sheet, rowIndex, colMap.qtyCol));
+    const length = parseNumericValue(readSheetCell(sheet, rowIndex, colMap.lengthCol));
+    const width = parseNumericValue(readSheetCell(sheet, rowIndex, colMap.widthCol));
+    const thickness = parseNumericValue(readSheetCell(sheet, rowIndex, colMap.thicknessCol));
+    const sources = [];
+    let rowCost = 0;
+    let rowArea = 0;
+    let hasAreaCell = false;
+
+    costCols.forEach((costColIndex) => {
+      const cell = readSheetCellValue(sheet, rowIndex, costColIndex);
+      const value = parseNumericValue(cell?.v);
+      const costRef = `${colIndexToLetter(costColIndex)}${rowIndex}`;
+      if (Number.isFinite(value)) {
+        rowCost += value;
+      }
+      const areaColIndex = areaColMap.get(costColIndex);
+      let areaValue = null;
+      let areaRef = null;
+      if (areaColIndex !== undefined && areaColIndex !== null) {
+        const areaCell = readSheetCellValue(sheet, rowIndex, areaColIndex);
+        areaValue = parseNumericValue(areaCell?.v);
+        areaRef = `${colIndexToLetter(areaColIndex)}${rowIndex}`;
+        if (Number.isFinite(areaValue)) {
+          rowArea += areaValue;
+          hasAreaCell = true;
+        }
+      }
+      sources.push({
+        ref: costRef,
+        value: Number.isFinite(value) ? value : 0,
+        formula: cell?.f || null,
+        areaRef,
+        areaValue: Number.isFinite(areaValue) ? areaValue : null,
+      });
+    });
+
+    if (!hasAreaCell) {
+      const derived = length && width && qty ? (length * width / 1e6) * qty : null;
+      if (Number.isFinite(derived)) rowArea = derived;
+    }
+
+    const name = nameRaw ? String(nameRaw).trim() : '';
+    if (!name && rowCost === 0 && (!rowArea || rowArea === 0)) {
+      continue;
+    }
+
+    details.push({
+      name: name || `Строка ${rowIndex}`,
+      qty: Number.isFinite(qty) ? qty : null,
+      area_m2: Number.isFinite(rowArea) ? rowArea : null,
+      thickness,
+      length_mm: Number.isFinite(length) ? length : null,
+      width_mm: Number.isFinite(width) ? width : null,
+      cost: round2(rowCost),
+      rowIndex,
+      sources,
+    });
+  }
+
+  return {
+    details,
+    areaColMap,
+  };
 }
 
 function buildDspBreakdownFromColumns(workbook, mapping, detailsSheetName, costCols) {
@@ -767,77 +1038,88 @@ function buildCalcSummary(workbook, anchors, mapping, detailsSheetName) {
   });
 
   if (anchors.dspRef) {
-    const sheetName = detailsSheetName || mapping.detailsSheet;
     const anchorCell = readRefCell(workbook, anchors.dspRef);
-    const costColsIndices = new Set();
-    if (anchorCell?.cell?.f) {
-      const refs = extractRefsFromFormula(anchorCell.cell.f);
-      refs.forEach((rawRef) => {
-        const normalized = normalizeFormulaRef(rawRef, anchorCell.sheetName);
-        if (!normalized.ref) return;
-        if (normalized.ref.includes(':')) {
-          const expanded = expandRangeRefs(normalized.ref, normalized.sheetName);
-          expanded.forEach((expandedRef) => {
-            const parsed = parseRef(expandedRef);
-            if (!parsed) return;
-            costColsIndices.add(XLSX.utils.decode_cell(parsed.cellRef).c);
-          });
-        } else {
-          const parsed = parseRef(`${normalized.sheetName}!${normalized.ref}`);
-          if (!parsed) return;
-          costColsIndices.add(XLSX.utils.decode_cell(parsed.cellRef).c);
-        }
-      });
-    }
-    const costColsList = [...costColsIndices];
+    const sheetName = anchorCell?.sheetName || detailsSheetName || mapping.detailsSheet;
+    const sheet = sheetName ? workbook.Sheets[sheetName] : null;
+    const detectedTable = sheet ? detectMaterialTable(sheet) : null;
+    const tableInfo = detectedTable?.confidence
+      ? detectedTable
+      : {
+          detailsStartRow: mapping.detailsStartRow || detectedTable?.detailsStartRow,
+          detailsEndRow: mapping.detailsEndRow || detectedTable?.detailsEndRow,
+          totalsRow: detectedTable?.totalsRow,
+          colMap: {
+            nameCol: mapping.detailsNameCol ?? detectedTable?.colMap?.nameCol,
+            thicknessCol: mapping.detailsThicknessCol ?? detectedTable?.colMap?.thicknessCol,
+            lengthCol: mapping.detailsLengthCol ?? detectedTable?.colMap?.lengthCol,
+            widthCol: mapping.detailsWidthCol ?? detectedTable?.colMap?.widthCol,
+            qtyCol: mapping.detailsQtyCol ?? detectedTable?.colMap?.qtyCol,
+          },
+        };
+
+    const costInfo = getNonZeroCostColumns(workbook, anchors.dspRef, tableInfo?.totalsRow);
+    const costColsList = costInfo.costCols || [];
     const costColsLetters = costColsList.map((index) => colIndexToLetter(index)).filter(Boolean);
-    const dspTrace = traceCellLeaves(workbook, anchors.dspRef, {
-      stopPredicate: (ref, cell, ctx) => {
-        if (!cell || !ctx?.parsed) return false;
-        const parsed = ctx.parsed;
-        if (!sheetName || parsed.sheetName !== sheetName) return false;
-        const decoded = XLSX.utils.decode_cell(parsed.cellRef);
-        const row = decoded.r + 1;
-        const colIndex = decoded.c;
-        if (row < mapping.detailsStartRow || row > mapping.detailsEndRow) return false;
-        return costColsIndices.has(colIndex);
-      },
-    });
-    const leafSum = dspTrace.leaves.reduce((sum, item) => sum + (item.value || 0), 0);
+    const breakdownResult = sheet && tableInfo
+      ? buildDspBreakdownFromTotals(sheet, tableInfo, costColsList)
+      : null;
+
+    const details = breakdownResult?.details || [];
+    const breakdownSum = details.reduce((sum, item) => sum + (item.cost || 0), 0);
     let totalValue = readAnchorValue(workbook, anchors.dspRef);
-    let coverageWarning = null;
+    let coverageWarning = costInfo.warning || null;
     let coverage = null;
     if (totalValue === null || totalValue === undefined) {
-      totalValue = leafSum;
+      totalValue = breakdownSum;
       coverage = 1;
-      coverageWarning = 'У формулы нет cached value, использую сумму по деталям.';
+      coverageWarning = coverageWarning || 'У формулы нет cached value, использую сумму по деталям.';
     } else {
-      coverage = computeCoverage(leafSum, totalValue);
+      coverage = computeCoverage(breakdownSum, totalValue);
     }
-    const details = buildDetailBreakdown(workbook, dspTrace.leaves, mapping, sheetName);
-    const primaryUsable = coverage !== null && coverage > 0.95 && coverage < 1.05 && leafSum > 0;
-    const shouldFallback = leafSum <= 0
-      || details.length === 0
-      || coverage === null
-      || coverage <= 0.95
-      || coverage >= 1.05;
+
+    const coverageOutOfRange = coverage === null || coverage < 0.95 || coverage > 1.05;
+    const shouldFallback = details.length === 0 || breakdownSum <= 0 || coverageOutOfRange;
     const fallbackDetails = shouldFallback
       ? buildDspBreakdownFromColumns(workbook, mapping, sheetName, costColsLetters)
       : [];
     const fallbackUsed = shouldFallback && fallbackDetails.length > 0;
     const finalDetails = fallbackUsed ? fallbackDetails : details;
+    const baseParts = finalDetails.map((item) => ({
+      name: item.name,
+      qty: item.qty,
+      length_mm: item.length_mm || null,
+      width_mm: item.width_mm || null,
+      thickness: item.thickness || null,
+      area_m2: item.area_m2 || null,
+      cost: item.cost || 0,
+    }));
+
     summary.breakdown.dsp = {
-      leafCount: dspTrace.leaves.length,
-      leafSum: round2(leafSum),
+      leafCount: details.length,
+      leafSum: round2(breakdownSum),
       totalValue,
       coverage,
       details: finalDetails,
-      usable: primaryUsable,
+      usable: !coverageOutOfRange && breakdownSum > 0 && finalDetails.length > 0,
       costColsIndices: costColsList,
       costColsLetters,
-      leafRefs: dspTrace.leaves.map((leaf) => parseRef(leaf.ref, sheetName)?.cellRef || leaf.ref),
+      leafRefs: costInfo.refsWithValues?.map((ref) => ref.ref) || [],
       warning: coverageWarning,
       fallbackUsed,
+      debug: {
+        dspTotalRef: anchors.dspRef,
+        dspTotalValue: totalValue,
+        formulaRefs: costInfo.refsWithValues || [],
+        costColsLetters,
+        costColsIndices: costColsList,
+        areaColsByCost: breakdownResult?.areaColMap
+          ? [...breakdownResult.areaColMap.entries()].map(([costCol, areaCol]) => ({
+              costCol,
+              areaCol,
+            }))
+          : [],
+      },
+      baseParts,
     };
     summary.rates.dsp = buildDspRates(finalDetails);
   }
@@ -1044,6 +1326,22 @@ function autoDetectMapping(sheet) {
       });
       mapping.detailsEndRow = mapping.detailsStartRow + 30;
       break;
+    }
+  }
+
+  if (!mapping.detailsStartRow || !mapping.detailsEndRow) {
+    const tableInfo = detectMaterialTable(sheet);
+    if (tableInfo) {
+      mapping.detailsHeaderRow = tableInfo.headerRow;
+      mapping.detailsStartRow = tableInfo.detailsStartRow;
+      mapping.detailsEndRow = tableInfo.detailsEndRow;
+      if (tableInfo.colMap) {
+        mapping.detailsNameCol = tableInfo.colMap.nameCol;
+        mapping.detailsThicknessCol = tableInfo.colMap.thicknessCol;
+        mapping.detailsLengthCol = tableInfo.colMap.lengthCol;
+        mapping.detailsWidthCol = tableInfo.colMap.widthCol;
+        mapping.detailsQtyCol = tableInfo.colMap.qtyCol;
+      }
     }
   }
 
@@ -1268,6 +1566,7 @@ function parseExcelWithMapping(workbook, mapping) {
   const dims = parseDimensions(sheet, mapping);
   const anchors = resolveAnchors(state.calcSummary?.anchors, mapping.anchorOverrides);
   const calcSummary = buildCalcSummary(workbook, anchors, mapping, state.activeSheet);
+  const baseParts = calcSummary?.breakdown?.dsp?.baseParts || [];
   const baseCostFromAnchors = calcSummary.baseValues.totalCost;
   const baseCost = Number.isFinite(baseCostFromAnchors)
     ? baseCostFromAnchors
@@ -1279,6 +1578,7 @@ function parseExcelWithMapping(workbook, mapping) {
     corpus,
     furniture,
     materials,
+    baseParts,
     baseCost: Number.isFinite(baseCost) ? baseCost : null,
     baseMaterialCost,
     calcSummary,
@@ -1318,6 +1618,16 @@ function calculateWeight(parts) {
     }
   });
   return Math.round(totalKg * 100) / 100;
+}
+
+function calculateWeightFromBreakdown(parts) {
+  if (!parts || parts.length === 0) return null;
+  let total = 0;
+  parts.forEach((part) => {
+    if (!part.area_m2 || !part.thickness) return;
+    total += 730 * part.area_m2 * (part.thickness / 1000);
+  });
+  return Math.round(total * 100) / 100;
 }
 
 function calculatePrice(parts, materials) {
@@ -1377,23 +1687,40 @@ function splitSections(totalWidth) {
 }
 
 function inferSectionCount(spec) {
-  const backQty = spec.corpus.reduce((sum, part) => {
-    return inferPartType(part.name) === 'back' ? sum + (part.qty || 0) : sum;
-  }, 0);
-  if (backQty > 0) {
-    return Math.max(1, Math.round(backQty));
-  }
-  const partitionsQty = spec.corpus.reduce((sum, part) => {
-    return inferPartType(part.name) === 'partition' ? sum + (part.qty || 0) : sum;
+  const baseParts = spec.baseParts || [];
+  const hasBaseParts = baseParts.length > 0;
+  const partsSource = hasBaseParts ? baseParts : (spec.corpus || []);
+  const partitionsQty = partsSource.reduce((sum, part) => {
+    const name = hasBaseParts ? part.name : part.name;
+    return inferPartType(name) === 'partition' ? sum + (part.qty || 0) : sum;
   }, 0);
   if (partitionsQty > 0) {
     return Math.max(1, Math.round(partitionsQty) + 1);
   }
-  const fallback = splitSections(spec.dims.width || 0).length;
-  return fallback || 1;
+  return hasBaseParts ? 1 : (splitSections(spec.dims.width || 0).length || 1);
 }
 
 function getBaseStructure(spec) {
+  const baseParts = spec.baseParts || [];
+  if (baseParts.length > 0) {
+    const shelves = baseParts.reduce((sum, part) => {
+      return String(part.name || '').toLowerCase().includes('полк')
+        ? sum + (part.qty || 0)
+        : sum;
+    }, 0);
+    const partitions = baseParts.reduce((sum, part) => {
+      const name = String(part.name || '').toLowerCase();
+      if (name.includes('перегород') || name.includes('боков')) {
+        return sum + (part.qty || 0);
+      }
+      return sum;
+    }, 0);
+    return {
+      sections: partitions > 0 ? partitions + 1 : null,
+      partitions: partitions > 0 ? partitions : null,
+      shelves,
+    };
+  }
   const sections = inferSectionCount(spec);
   const shelves = spec.corpus.reduce((sum, part) => {
     return inferPartType(part.name) === 'shelf' ? sum + (part.qty || 0) : sum;
@@ -1413,7 +1740,8 @@ function getBasePriceFromSpec(spec) {
 }
 
 function renderBaseSummary(spec) {
-  const baseWeight = calculateWeight(spec.corpus);
+  const baseWeight = calculateWeightFromBreakdown(spec.baseParts)
+    ?? calculateWeight(spec.corpus);
   const basePrice = getBasePriceFromSpec(spec);
   document.getElementById('current-dims').textContent = formatDimensions(spec.dims);
   document.getElementById('current-weight').textContent = formatNumber(baseWeight, 'кг');
@@ -1558,6 +1886,7 @@ function renderCalcBreakdown(spec) {
   const diagnostics = document.getElementById('calc-dsp-diagnostics');
   const debugToggle = document.getElementById('calc-debug-toggle');
   const debugPanel = document.getElementById('calc-debug-panel');
+  const debugMeta = document.getElementById('calc-debug-meta');
   if (!table) return;
   table.innerHTML = '';
   const breakdown = spec.calcSummary?.breakdown?.dsp;
@@ -1575,6 +1904,7 @@ function renderCalcBreakdown(spec) {
     if (totalValue) totalValue.textContent = '—';
     if (coverageWarning) coverageWarning.textContent = '';
     if (diagnostics) diagnostics.innerHTML = '';
+    if (debugMeta) debugMeta.innerHTML = '';
     if (debugPanel) debugPanel.classList.add('hidden');
     return;
   }
@@ -1612,6 +1942,7 @@ function renderCalcBreakdown(spec) {
         `;
       }
     }
+    if (debugMeta) debugMeta.innerHTML = '';
     if (debugPanel) debugPanel.classList.add('hidden');
     return;
   }
@@ -1678,6 +2009,23 @@ function renderCalcBreakdown(spec) {
       `;
     }
   }
+  if (debugMeta) {
+    debugMeta.innerHTML = '';
+    const debug = breakdown.debug || {};
+    const refs = (debug.formulaRefs || []).map((item) => `${item.ref}: ${round2(item.value)}`).join(', ') || '—';
+    const cols = (debug.costColsLetters || []).join(', ') || '—';
+    const areaCols = (debug.areaColsByCost || [])
+      .map((pair) => `${colIndexToLetter(pair.costCol)}→${colIndexToLetter(pair.areaCol)}`)
+      .join(', ') || '—';
+    debugMeta.innerHTML = `
+      <div><strong>Debug ДСП:</strong></div>
+      <div>dspTotalRef: ${debug.dspTotalRef || '—'}</div>
+      <div>dspTotalValue: ${formatNumber(debug.dspTotalValue, '₽')}</div>
+      <div>formula refs: ${refs}</div>
+      <div>costCols: ${cols}</div>
+      <div>areaCols: ${areaCols}</div>
+    `;
+  }
   if (debugToggle) {
     debugToggle.textContent = state.calcDebug.visible ? 'Скрыть источники' : 'Показать источники';
     debugToggle.onclick = () => {
@@ -1714,7 +2062,8 @@ function renderCalcDebugSources(breakdown) {
     debugTitle.textContent = 'Источники: строка не найдена';
     return;
   }
-  debugTitle.textContent = `Источники для: ${detail.name}`;
+  const qtyInfo = detail.qty ? ` (qty: ${detail.qty})` : '';
+  debugTitle.textContent = `Источники для: ${detail.name}${qtyInfo}`;
   if (!detail.sources || detail.sources.length === 0) {
     const item = document.createElement('li');
     item.textContent = 'Нет данных об источниках.';
@@ -1724,7 +2073,10 @@ function renderCalcDebugSources(breakdown) {
   detail.sources.forEach((source) => {
     const item = document.createElement('li');
     const formula = source.formula ? ` | formula: ${source.formula}` : '';
-    item.textContent = `${source.ref}: ${round2(source.value)}${formula}`;
+    const areaInfo = source.areaRef
+      ? ` | area ${source.areaRef}: ${source.areaValue !== null ? round2(source.areaValue) : '—'}`
+      : '';
+    item.textContent = `${source.ref}: ${round2(source.value)}${areaInfo}${formula}`;
     debugList.appendChild(item);
   });
 }
@@ -1975,7 +2327,8 @@ function attachEventHandlers() {
 
     if (sameDims && noOverrides) {
       const spec = state.originalSpec;
-      const weight = calculateWeight(spec.corpus);
+      const weight = calculateWeightFromBreakdown(spec.baseParts)
+        ?? calculateWeight(spec.corpus);
       const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
       const baseHardwareCost = calculateFurnitureCost(spec.furniture || []);
       const baseOther = spec.baseCost
