@@ -355,6 +355,26 @@ select {
   font-size: 12px;
 }
 
+.material-spec {
+  margin-top: 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #f9fbfc;
+  padding: 12px 14px;
+}
+
+.material-spec summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.material-spec-body {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
 @media (max-width: 1024px) {
   .mapping-layout {
     grid-template-columns: 1fr;
