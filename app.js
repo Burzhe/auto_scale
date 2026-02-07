@@ -9,6 +9,18 @@ const state = {
 
 const COLUMN_LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
 
+function setUploadError(message) {
+  const box = document.getElementById('upload-error');
+  if (!box) return;
+  if (message) {
+    box.textContent = message;
+    box.classList.remove('hidden');
+  } else {
+    box.textContent = '';
+    box.classList.add('hidden');
+  }
+}
+
 function colIndexToLetter(index) {
   return COLUMN_LETTERS[index] || '';
 }
@@ -411,6 +423,11 @@ function updateMappingFromAuto(type) {
 }
 
 async function handleFileUpload(file) {
+  if (!window.XLSX) {
+    setUploadError('Не удалось загрузить библиотеку чтения Excel. Проверьте доступ к интернету и перезагрузите страницу.');
+    return;
+  }
+  setUploadError('');
   const data = await file.arrayBuffer();
   const workbook = XLSX.read(data, { type: 'array' });
   state.workbook = workbook;
@@ -439,6 +456,11 @@ function renderSheetOptions() {
 }
 
 function attachEventHandlers() {
+  if (!window.XLSX) {
+    setUploadError('Не удалось загрузить библиотеку чтения Excel. Проверьте доступ к интернету и перезагрузите страницу.');
+    document.getElementById('file-input').setAttribute('disabled', 'disabled');
+  }
+
   document.getElementById('file-input').addEventListener('change', (event) => {
     const file = event.target.files[0];
     if (file) handleFileUpload(file);

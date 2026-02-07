@@ -153,6 +153,15 @@ main {
   font-size: 13px;
 }
 
+.upload-error {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 94, 94, 0.12);
+  color: #b82121;
+  font-size: 13px;
+}
+
 .mapping-layout {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
