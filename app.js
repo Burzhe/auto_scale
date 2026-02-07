@@ -403,6 +403,9 @@ function traceCellLeaves(workbook, rootRef, opts = {}) {
   const maxDepth = opts.maxDepth || 20;
   const visited = opts.visited || new Set();
   const stopPredicate = opts.stopPredicate;
+  if (typeof stopPredicate !== 'function') {
+    throw new Error('traceCellLeaves requires stopPredicate option.');
+  }
 
   const trace = (ref, depth, path) => {
     if (!ref || depth > maxDepth) return;
@@ -414,19 +417,27 @@ function traceCellLeaves(workbook, rootRef, opts = {}) {
     if (!sheet) return;
     const cell = sheet[parsed.cellRef];
     const node = { ref, children: [] };
+    if (stopPredicate(ref, cell, {
+      sheet,
+      parsed,
+      depth,
+      path,
+    })) {
+      const value = parseNumericValue(cell?.v);
+      const decoded = XLSX.utils.decode_cell(parsed.cellRef);
+      leaves.push({
+        ref,
+        value: Number.isFinite(value) ? value : 0,
+        formula: cell?.f || null,
+        sheet: parsed.sheetName,
+        row: decoded.r + 1,
+        col: decoded.c + 1,
+      });
+      tree.push(node);
+      return;
+    }
+
     if (cell?.f) {
-      if (stopPredicate && stopPredicate({ ref, cell, sheet, parsed })) {
-        const value = parseNumericValue(cell.v);
-        leaves.push({
-          ref,
-          value: Number.isFinite(value) ? value : 0,
-          sheet: parsed.sheetName,
-          row: XLSX.utils.decode_cell(parsed.cellRef).r + 1,
-          col: XLSX.utils.decode_cell(parsed.cellRef).c + 1,
-        });
-        tree.push(node);
-        return;
-      }
       const refs = extractRefsFromFormula(cell.f);
       if (refs.length) {
         refs.forEach((raw) => {
@@ -452,22 +463,26 @@ function traceCellLeaves(workbook, rootRef, opts = {}) {
         });
       } else {
         const value = parseNumericValue(cell.v);
+        const decoded = XLSX.utils.decode_cell(parsed.cellRef);
         leaves.push({
           ref,
           value: Number.isFinite(value) ? value : 0,
+          formula: cell.f || null,
           sheet: parsed.sheetName,
-          row: XLSX.utils.decode_cell(parsed.cellRef).r + 1,
-          col: XLSX.utils.decode_cell(parsed.cellRef).c + 1,
+          row: decoded.r + 1,
+          col: decoded.c + 1,
         });
       }
     } else {
       const value = parseNumericValue(cell?.v);
+      const decoded = XLSX.utils.decode_cell(parsed.cellRef);
       leaves.push({
         ref,
         value: Number.isFinite(value) ? value : 0,
+        formula: cell?.f || null,
         sheet: parsed.sheetName,
-        row: XLSX.utils.decode_cell(parsed.cellRef).r + 1,
-        col: XLSX.utils.decode_cell(parsed.cellRef).c + 1,
+        row: decoded.r + 1,
+        col: decoded.c + 1,
       });
     }
     tree.push(node);
@@ -663,21 +678,30 @@ function buildDetailBreakdown(workbook, leaves, mapping, detailsSheetName) {
     const thickness = parseNumericValue(readSheetCell(sheet, rowIndex, mapping.detailsThicknessCol));
     const cost = leafItems.reduce((sum, item) => sum + (item.value || 0), 0);
     const area = length && width && qty ? (length * width / 1e6) * qty : null;
+    const name = nameRaw ? String(nameRaw).trim() : '';
+    if (!name && cost === 0 && (!area || area === 0)) {
+      return;
+    }
     details.push({
-      name: nameRaw ? String(nameRaw).trim() : `Строка ${rowIndex}`,
+      name: name || `Строка ${rowIndex}`,
       qty: Number.isFinite(qty) ? qty : null,
       area_m2: area,
       thickness,
       cost: round2(cost),
       rowIndex,
+      sources: leafItems.map((leaf) => ({
+        ref: parseRef(leaf.ref, sheetName)?.cellRef || leaf.ref,
+        value: leaf.value,
+        formula: leaf.formula || null,
+      })),
     });
   });
   return details;
 }
 
 function computeCoverage(sumBreakdown, totalValue) {
-  if (!totalValue) return null;
-  return (sumBreakdown / totalValue) * 100;
+  if (totalValue === null || totalValue === undefined || totalValue === 0) return null;
+  return sumBreakdown / totalValue;
 }
 
 function buildDspRates(details) {
@@ -743,29 +767,85 @@ function buildCalcSummary(workbook, anchors, mapping, detailsSheetName) {
   });
 
   if (anchors.dspRef) {
-    const totalValue = summary.baseValues.dsp;
-    const costCols = extractCostColumnsFromAnchor(workbook, anchors.dspRef);
-    const details = buildDspBreakdownFromColumns(workbook, mapping, detailsSheetName, costCols);
-    const sumBreakdown = details.reduce((sum, item) => sum + (item.cost || 0), 0);
-    const coverage = computeCoverage(sumBreakdown, totalValue);
-    const detailUsable = Number.isFinite(coverage)
-      ? coverage >= 99 && coverage <= 101 && details.length > 0
-      : details.length > 0;
-    const usedCellsCount = details.reduce((sum, item) => sum + (item.sources?.length || 0), 0);
+    const sheetName = detailsSheetName || mapping.detailsSheet;
+    const anchorCell = readRefCell(workbook, anchors.dspRef);
+    const costColsIndices = new Set();
+    if (anchorCell?.cell?.f) {
+      const refs = extractRefsFromFormula(anchorCell.cell.f);
+      refs.forEach((rawRef) => {
+        const normalized = normalizeFormulaRef(rawRef, anchorCell.sheetName);
+        if (!normalized.ref) return;
+        if (normalized.ref.includes(':')) {
+          const expanded = expandRangeRefs(normalized.ref, normalized.sheetName);
+          expanded.forEach((expandedRef) => {
+            const parsed = parseRef(expandedRef);
+            if (!parsed) return;
+            costColsIndices.add(XLSX.utils.decode_cell(parsed.cellRef).c);
+          });
+        } else {
+          const parsed = parseRef(`${normalized.sheetName}!${normalized.ref}`);
+          if (!parsed) return;
+          costColsIndices.add(XLSX.utils.decode_cell(parsed.cellRef).c);
+        }
+      });
+    }
+    const costColsList = [...costColsIndices];
+    const costColsLetters = costColsList.map((index) => colIndexToLetter(index)).filter(Boolean);
+    const dspTrace = traceCellLeaves(workbook, anchors.dspRef, {
+      stopPredicate: (ref, cell, ctx) => {
+        if (!cell || !ctx?.parsed) return false;
+        const parsed = ctx.parsed;
+        if (!sheetName || parsed.sheetName !== sheetName) return false;
+        const decoded = XLSX.utils.decode_cell(parsed.cellRef);
+        const row = decoded.r + 1;
+        const colIndex = decoded.c;
+        if (row < mapping.detailsStartRow || row > mapping.detailsEndRow) return false;
+        return costColsIndices.has(colIndex);
+      },
+    });
+    const leafSum = dspTrace.leaves.reduce((sum, item) => sum + (item.value || 0), 0);
+    let totalValue = readAnchorValue(workbook, anchors.dspRef);
+    let coverageWarning = null;
+    let coverage = null;
+    if (totalValue === null || totalValue === undefined) {
+      totalValue = leafSum;
+      coverage = 1;
+      coverageWarning = 'У формулы нет cached value, использую сумму по деталям.';
+    } else {
+      coverage = computeCoverage(leafSum, totalValue);
+    }
+    const details = buildDetailBreakdown(workbook, dspTrace.leaves, mapping, sheetName);
+    const primaryUsable = coverage !== null && coverage > 0.95 && coverage < 1.05 && leafSum > 0;
+    const shouldFallback = leafSum <= 0
+      || details.length === 0
+      || coverage === null
+      || coverage <= 0.95
+      || coverage >= 1.05;
+    const fallbackDetails = shouldFallback
+      ? buildDspBreakdownFromColumns(workbook, mapping, sheetName, costColsLetters)
+      : [];
+    const fallbackUsed = shouldFallback && fallbackDetails.length > 0;
+    const finalDetails = fallbackUsed ? fallbackDetails : details;
     summary.breakdown.dsp = {
-      leafCount: usedCellsCount,
-      leafSum: round2(sumBreakdown),
+      leafCount: dspTrace.leaves.length,
+      leafSum: round2(leafSum),
       totalValue,
       coverage,
-      details: detailUsable ? details : [],
-      usable: detailUsable,
-      costCols,
+      details: finalDetails,
+      usable: primaryUsable,
+      costColsIndices: costColsList,
+      costColsLetters,
+      leafRefs: dspTrace.leaves.map((leaf) => parseRef(leaf.ref, sheetName)?.cellRef || leaf.ref),
+      warning: coverageWarning,
+      fallbackUsed,
     };
-    summary.rates.dsp = buildDspRates(detailUsable ? details : []);
+    summary.rates.dsp = buildDspRates(finalDetails);
   }
 
   if (anchors.edgeRef) {
-    const edgeTrace = traceCellLeaves(workbook, anchors.edgeRef);
+    const edgeTrace = traceCellLeaves(workbook, anchors.edgeRef, {
+      stopPredicate: () => false,
+    });
     const leafSum = edgeTrace.leaves.reduce((sum, item) => sum + (item.value || 0), 0);
     const totalValue = summary.baseValues.edge;
     const coverage = computeCoverage(leafSum, totalValue);
@@ -774,12 +854,14 @@ function buildCalcSummary(workbook, anchors, mapping, detailsSheetName) {
       leafSum: round2(leafSum),
       totalValue,
       coverage,
-      usable: coverage !== null ? coverage >= 99 && coverage <= 101 : false,
+      usable: coverage !== null ? coverage >= 0.99 && coverage <= 1.01 : false,
     };
   }
 
   if (anchors.weightRef) {
-    const weightTrace = traceCellLeaves(workbook, anchors.weightRef);
+    const weightTrace = traceCellLeaves(workbook, anchors.weightRef, {
+      stopPredicate: () => false,
+    });
     const leafSum = weightTrace.leaves.reduce((sum, item) => sum + (item.value || 0), 0);
     const totalValue = summary.baseValues.weight;
     const coverage = computeCoverage(leafSum, totalValue);
@@ -788,7 +870,7 @@ function buildCalcSummary(workbook, anchors, mapping, detailsSheetName) {
       leafSum: round2(leafSum),
       totalValue,
       coverage,
-      usable: coverage !== null ? coverage >= 99 && coverage <= 101 : false,
+      usable: coverage !== null ? coverage >= 0.99 && coverage <= 1.01 : false,
     };
   }
 
@@ -1370,10 +1452,13 @@ function renderValidationSummary(spec) {
       warningBox.appendChild(warning);
     }
   }
-  const dspCoverage = spec.calcSummary?.breakdown?.dsp?.coverage;
-  if (dspCoverage !== null && dspCoverage !== undefined && dspCoverage < 95) {
+  const dspBreakdown = spec.calcSummary?.breakdown?.dsp;
+  if (dspBreakdown?.fallbackUsed) {
+    const percent = dspBreakdown.coverage !== null && dspBreakdown.coverage !== undefined
+      ? `${round2(dspBreakdown.coverage * 100)}%`
+      : 'нет данных';
     const warning = document.createElement('div');
-    warning.textContent = `⚠️ Разбор ДСП покрывает ${dspCoverage.toFixed(1)}% — используется fallback.`;
+    warning.textContent = `⚠️ Разбор ДСП покрывает ${percent} — используется fallback.`;
     warningBox.appendChild(warning);
   }
 }
@@ -1470,6 +1555,7 @@ function renderCalcBreakdown(spec) {
   const leafSum = document.getElementById('calc-leaf-sum');
   const totalValue = document.getElementById('calc-total');
   const coverageWarning = document.getElementById('calc-coverage-warning');
+  const diagnostics = document.getElementById('calc-dsp-diagnostics');
   const debugToggle = document.getElementById('calc-debug-toggle');
   const debugPanel = document.getElementById('calc-debug-panel');
   if (!table) return;
@@ -1488,6 +1574,7 @@ function renderCalcBreakdown(spec) {
     if (leafSum) leafSum.textContent = '—';
     if (totalValue) totalValue.textContent = '—';
     if (coverageWarning) coverageWarning.textContent = '';
+    if (diagnostics) diagnostics.innerHTML = '';
     if (debugPanel) debugPanel.classList.add('hidden');
     return;
   }
@@ -1502,12 +1589,29 @@ function renderCalcBreakdown(spec) {
     row.appendChild(cell);
     table.appendChild(row);
     if (leafCount) leafCount.textContent = formatNumber(breakdown.leafCount);
-    if (coverage) coverage.textContent = Number.isFinite(breakdown.coverage)
-      ? `${round2(breakdown.coverage)}%`
+    if (coverage) coverage.textContent = breakdown.coverage !== null && breakdown.coverage !== undefined
+      ? `${round2(breakdown.coverage * 100)}%`
       : 'нет данных';
     if (leafSum) leafSum.textContent = formatNumber(breakdown.leafSum, '₽');
     if (totalValue) totalValue.textContent = formatNumber(breakdown.totalValue, '₽');
     if (coverageWarning) coverageWarning.textContent = '';
+    if (diagnostics) {
+      diagnostics.innerHTML = '';
+      if (breakdown.usable === false) {
+        const refs = (breakdown.leafRefs || []).slice(0, 10).join(', ') || '—';
+        const cols = (breakdown.costColsIndices || []).join(', ') || '—';
+        const letters = (breakdown.costColsLetters || []).join(', ') || '—';
+        diagnostics.innerHTML = `
+          <div><strong>Диагностика ДСП:</strong></div>
+          <div>totalValue: ${formatNumber(breakdown.totalValue, '₽')}</div>
+          <div>leafCount: ${formatNumber(breakdown.leafCount)}</div>
+          <div>leafSum: ${formatNumber(breakdown.leafSum, '₽')}</div>
+          <div>leafRefs: ${refs}</div>
+          <div>costColsIndices: ${cols}</div>
+          <div>costColsLetters: ${letters}</div>
+        `;
+      }
+    }
     if (debugPanel) debugPanel.classList.add('hidden');
     return;
   }
@@ -1543,16 +1647,35 @@ function renderCalcBreakdown(spec) {
   });
 
   if (leafCount) leafCount.textContent = formatNumber(breakdown.leafCount);
-  if (coverage) coverage.textContent = Number.isFinite(breakdown.coverage)
-    ? `${round2(breakdown.coverage)}%`
+  if (coverage) coverage.textContent = breakdown.coverage !== null && breakdown.coverage !== undefined
+    ? `${round2(breakdown.coverage * 100)}%`
     : 'нет данных';
   if (leafSum) leafSum.textContent = formatNumber(breakdown.leafSum, '₽');
   if (totalValue) totalValue.textContent = formatNumber(breakdown.totalValue, '₽');
   if (coverageWarning) {
-    if (Number.isFinite(breakdown.coverage) && (breakdown.coverage > 105 || breakdown.coverage < 95)) {
-      coverageWarning.textContent = '⚠️ Покрытие вне диапазона 95–105%. Включите «Показать источники» для проверки.';
-    } else {
-      coverageWarning.textContent = '';
+    const warnings = [];
+    if (breakdown.warning) warnings.push(`⚠️ ${breakdown.warning}`);
+    if (breakdown.coverage !== null && breakdown.coverage !== undefined
+      && (breakdown.coverage > 1.05 || breakdown.coverage < 0.95)) {
+      warnings.push('⚠️ Покрытие вне диапазона 95–105%. Включите «Показать источники» для проверки.');
+    }
+    coverageWarning.textContent = warnings.join(' ');
+  }
+  if (diagnostics) {
+    diagnostics.innerHTML = '';
+    if (breakdown.usable === false) {
+      const refs = (breakdown.leafRefs || []).slice(0, 10).join(', ') || '—';
+      const cols = (breakdown.costColsIndices || []).join(', ') || '—';
+      const letters = (breakdown.costColsLetters || []).join(', ') || '—';
+      diagnostics.innerHTML = `
+        <div><strong>Диагностика ДСП:</strong></div>
+        <div>totalValue: ${formatNumber(breakdown.totalValue, '₽')}</div>
+        <div>leafCount: ${formatNumber(breakdown.leafCount)}</div>
+        <div>leafSum: ${formatNumber(breakdown.leafSum, '₽')}</div>
+        <div>leafRefs: ${refs}</div>
+        <div>costColsIndices: ${cols}</div>
+        <div>costColsLetters: ${letters}</div>
+      `;
     }
   }
   if (debugToggle) {
