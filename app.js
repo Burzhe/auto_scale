@@ -13,6 +13,8 @@ const state = {
 
 const COLUMN_LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
 const MATERIAL_DENSITY = 720;
+const MAX_SECTION_WIDTH = 1200;
+const PARTITION_THRESHOLD = 800;
 
 function setUploadError(message) {
   const box = document.getElementById('upload-error');
@@ -561,6 +563,72 @@ function calculatePrice(parts, materials) {
   return Math.round(total);
 }
 
+function calculateFurnitureCost(furniture) {
+  return (furniture || []).reduce((sum, item) => {
+    const price = Number(item.price || 0);
+    if (!price || item.unit === '%') return sum;
+    return sum + Number(item.qty || 0) * price;
+  }, 0);
+}
+
+function inferPartType(name) {
+  const n = (name || '').toLowerCase();
+  if (n.includes('бок')) return 'side';
+  if (n.includes('дно') || n.includes('крыш')) return 'base';
+  if (n.includes('зад') || n.includes('двп')) return 'back';
+  if (n.includes('перегород')) return 'partition';
+  if (n.includes('фасад') || n.includes('двер')) return 'facade';
+  if (n.includes('полк')) return 'shelf';
+  if (n.includes('ящик')) return 'drawer';
+  if (n.includes('штанг')) return 'rod';
+  return 'other';
+}
+
+function splitSections(totalWidth) {
+  const minSections = totalWidth >= PARTITION_THRESHOLD ? 2 : 1;
+  if (totalWidth <= MAX_SECTION_WIDTH && minSections === 1) {
+    return [totalWidth];
+  }
+  const requiredSections = Math.ceil(totalWidth / MAX_SECTION_WIDTH);
+  const numSections = Math.max(requiredSections, minSections);
+  const baseWidth = Math.floor(totalWidth / numSections);
+  const remainder = totalWidth - baseWidth * numSections;
+  const sections = Array(numSections).fill(baseWidth);
+  for (let i = 0; i < remainder; i += 1) {
+    sections[i] += 1;
+  }
+  return sections;
+}
+
+function inferSectionCount(spec) {
+  const backQty = spec.corpus.reduce((sum, part) => {
+    return inferPartType(part.name) === 'back' ? sum + (part.qty || 0) : sum;
+  }, 0);
+  if (backQty > 0) {
+    return Math.max(1, Math.round(backQty));
+  }
+  const partitionsQty = spec.corpus.reduce((sum, part) => {
+    return inferPartType(part.name) === 'partition' ? sum + (part.qty || 0) : sum;
+  }, 0);
+  if (partitionsQty > 0) {
+    return Math.max(1, Math.round(partitionsQty) + 1);
+  }
+  const fallback = splitSections(spec.dims.width || 0).length;
+  return fallback || 1;
+}
+
+function getBaseStructure(spec) {
+  const sections = inferSectionCount(spec);
+  const shelves = spec.corpus.reduce((sum, part) => {
+    return inferPartType(part.name) === 'shelf' ? sum + (part.qty || 0) : sum;
+  }, 0);
+  return {
+    sections,
+    partitions: Math.max(sections - 1, 0),
+    shelves,
+  };
+}
+
 function getBasePriceFromSpec(spec) {
   if (spec.baseCost !== null && spec.baseCost !== undefined) {
     return spec.baseCost;
@@ -580,6 +648,30 @@ function renderBaseSummary(spec) {
   if (!widthInput.value) widthInput.value = spec.dims.width || '';
   if (!depthInput.value) depthInput.value = spec.dims.depth || '';
   if (!heightInput.value) heightInput.value = spec.dims.height || '';
+}
+
+function renderValidationSummary(spec) {
+  const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
+  const baseHardwareCost = calculateFurnitureCost(spec.furniture || []);
+  const baseCost = spec.baseCost;
+  const baseOther = baseCost !== null && baseCost !== undefined
+    ? baseCost - (baseMaterialsCost + baseHardwareCost)
+    : null;
+  document.getElementById('validation-base-cost').textContent = formatNumber(baseCost, '₽');
+  document.getElementById('validation-base-materials').textContent = formatNumber(baseMaterialsCost, '₽');
+  document.getElementById('validation-base-hardware').textContent = formatNumber(baseHardwareCost, '₽');
+  document.getElementById('validation-base-other').textContent = formatNumber(baseOther, '₽');
+
+  const warningBox = document.getElementById('validation-warning');
+  warningBox.innerHTML = '';
+  if (baseCost !== null && baseCost !== undefined) {
+    const other = Number(baseOther);
+    if (other < 0 || other > baseCost * 0.7) {
+      const warning = document.createElement('div');
+      warning.textContent = '⚠️ проверь маппинг или в КП есть услуги/наценки';
+      warningBox.appendChild(warning);
+    }
+  }
 }
 
 function renderResultsTable(type, spec) {
@@ -673,7 +765,7 @@ function renderMaterialSpecOptions(spec) {
   });
 }
 
-function renderResults(spec, weight, price, warnings) {
+function renderResults(spec, weight, price, warnings, breakdown) {
   if (state.originalSpec) {
     renderBaseSummary(state.originalSpec);
   }
@@ -681,6 +773,10 @@ function renderResults(spec, weight, price, warnings) {
   document.getElementById('new-dims').textContent = formatDimensions(spec.dims);
   document.getElementById('new-weight').textContent = formatNumber(weight, 'кг');
   document.getElementById('new-price').textContent = formatNumber(price, '₽');
+  document.getElementById('price-materials').textContent = formatNumber(breakdown?.materials, '₽');
+  document.getElementById('price-hardware').textContent = formatNumber(breakdown?.hardware, '₽');
+  document.getElementById('price-other').textContent = formatNumber(breakdown?.other, '₽');
+  document.getElementById('price-total').textContent = formatNumber(breakdown?.total ?? price, '₽');
 
   const warningsBox = document.getElementById('warnings');
   warningsBox.innerHTML = '';
@@ -856,6 +952,7 @@ function attachEventHandlers() {
     state.originalSpec = parseExcelWithMapping(state.workbook, state.mapping);
     showScreen('results-screen');
     renderBaseSummary(state.originalSpec);
+    renderValidationSummary(state.originalSpec);
   });
 
   document.getElementById('calculate-btn').addEventListener('click', () => {
@@ -864,13 +961,64 @@ function attachEventHandlers() {
     const newHeight = Number(document.getElementById('new-height').value) || state.originalSpec.dims.height;
     const newSections = Number(document.getElementById('new-sections').value);
     const newShelves = Number(document.getElementById('new-shelves').value);
+    const enforceRules = document.getElementById('enforce-rules').checked;
+    const otherDriver = document.getElementById('other-driver').value;
+
+    const roundedNew = {
+      width: Math.round(newWidth),
+      depth: Math.round(newDepth),
+      height: Math.round(newHeight),
+    };
+    const roundedBase = {
+      width: Math.round(state.originalSpec.dims.width || 0),
+      depth: Math.round(state.originalSpec.dims.depth || 0),
+      height: Math.round(state.originalSpec.dims.height || 0),
+    };
+    const overrides = {
+      sectionCount: Number.isFinite(newSections) && newSections > 0 ? newSections : null,
+      shelfCount: Number.isFinite(newShelves) && newShelves > 0 ? newShelves : null,
+    };
+    const noOverrides = overrides.sectionCount === null && overrides.shelfCount === null;
+    const sameDims = roundedNew.width === roundedBase.width
+      && roundedNew.depth === roundedBase.depth
+      && roundedNew.height === roundedBase.height;
+
+    if (sameDims && noOverrides) {
+      const spec = state.originalSpec;
+      const weight = calculateWeight(spec.corpus);
+      const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
+      const baseHardwareCost = calculateFurnitureCost(spec.furniture || []);
+      const baseOther = spec.baseCost
+        ? Math.max(0, spec.baseCost - (baseMaterialsCost + baseHardwareCost))
+        : 0;
+      const price = spec.baseCost ?? calculatePrice(spec.corpus, spec.materials || {});
+      state.newSpec = spec;
+      renderResults(spec, weight, price, [], {
+        materials: Math.round(baseMaterialsCost * 100) / 100,
+        hardware: Math.round(baseHardwareCost * 100) / 100,
+        other: Math.round(baseOther * 100) / 100,
+        total: Math.round(price * 100) / 100,
+      });
+      const structure = getBaseStructure(spec);
+      document.getElementById('structure-sections').textContent = formatNumber(structure.sections);
+      document.getElementById('structure-partitions').textContent = formatNumber(structure.partitions);
+      document.getElementById('structure-shelves').textContent = formatNumber(structure.shelves);
+      return;
+    }
 
     const worker = getWorker();
     worker.onmessage = (event) => {
       if (event.data.type === 'result') {
-        const { spec, warnings, weight, price, structure } = event.data.payload;
+        const {
+          spec,
+          warnings,
+          weight,
+          price,
+          structure,
+          breakdown,
+        } = event.data.payload;
         state.newSpec = spec;
-        renderResults(spec, weight, price, warnings);
+        renderResults(spec, weight, price, warnings, breakdown);
         if (structure) {
           document.getElementById('structure-sections').textContent = formatNumber(structure.sections);
           document.getElementById('structure-partitions').textContent = formatNumber(structure.partitions);
@@ -885,10 +1033,9 @@ function attachEventHandlers() {
         newWidth,
         newDepth,
         newHeight,
-        overrides: {
-          sectionCount: Number.isFinite(newSections) && newSections > 0 ? newSections : null,
-          shelfCount: Number.isFinite(newShelves) && newShelves > 0 ? newShelves : null,
-        },
+        overrides,
+        enforceRules,
+        otherDriver,
       },
     });
   });
