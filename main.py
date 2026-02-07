@@ -1070,7 +1070,8 @@ def _recalculate_corpus(
     span_ratio = new_spans / old_spans if old_spans > 0 else 1
     section_ratio = new_sections_count / spec.sections_count if spec.sections_count else 1
 
-    old_polki = next((r.qty for r in spec.corpus_rows if 'полк' in r.name.lower()), 0) or 0
+    shelf_rows = [r for r in spec.corpus_rows if r.name and 'полк' in r.name.lower()]
+    old_polki = sum(r.qty or 0 for r in shelf_rows)
 
     # Сопоставляем новые секции со старыми типами (пропорционально)
     section_type_map: List[SectionType] = []
@@ -1109,7 +1110,37 @@ def _recalculate_corpus(
         elif 'перегород' in name_key or 'стойк' in name_key:
             material_map['перегородка'] = row.material or 'ЛДСП'
 
+    def _allocate_by_ratio(total_qty: int, rows: List) -> Dict[int, int]:
+        if not rows:
+            return {}
+        if len(rows) == 1:
+            return {id(rows[0]): total_qty}
+        qtys = [r.qty or 0 for r in rows]
+        sum_qty = sum(qtys)
+        if not sum_qty:
+            base = _distribute_items_per_section(total_qty, len(rows))
+            return {id(r): int(round(base[i])) for i, r in enumerate(rows)}
+        raw = [(q / sum_qty) * total_qty for q in qtys]
+        base = [math.floor(v) for v in raw]
+        remainder = total_qty - sum(base)
+        order = sorted(
+            [(i, raw[i] - base[i]) for i in range(len(rows))],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        idx = 0
+        while remainder > 0 and order:
+            base[order[idx % len(order)][0]] += 1
+            remainder -= 1
+            idx += 1
+        return {id(r): base[i] for i, r in enumerate(rows)}
+
     new_parts = []
+    shelves_from_ratio_total = sum(shelves_plan) if shelves_plan else 0
+    if not shelves_from_ratio_total and spec.sections_count:
+        shelves_from_ratio_total = (old_polki / spec.sections_count) * new_sections_count
+    shelves_target_total = math.ceil(shelves_from_ratio_total) if shelves_from_ratio_total else old_polki
+    shelf_qty_map = _allocate_by_ratio(int(shelves_target_total), shelf_rows)
     for row in spec.corpus_rows:
         name_low = row.name.lower()
         new_qty = row.qty or 0
@@ -1119,10 +1150,10 @@ def _recalculate_corpus(
         facade_target_qty: Optional[int] = None
 
         if 'полк' in name_low:
-            shelves_from_ratio = sum(shelves_plan) if shelves_plan else 0
-            if not shelves_from_ratio and spec.sections_count:
-                shelves_from_ratio = (old_polki / spec.sections_count) * new_sections_count
-            new_qty = shelves_from_ratio or new_qty
+            if shelf_qty_map:
+                new_qty = shelf_qty_map.get(id(row), new_qty)
+            elif shelves_target_total:
+                new_qty = shelves_target_total
             new_width_part = math.ceil(new_width / new_sections_count) if new_sections_count else new_width_part
         elif 'фасад' in name_low:
             facades_per_span = new_qty / old_spans if old_spans else new_qty
