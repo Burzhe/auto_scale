@@ -458,6 +458,14 @@
       return Math.round(total * 100) / 100;
     }
 
+    function sumArea(parts) {
+      return parts.reduce((sum, part) => sum + (Number(part.area_m2 || 0) || 0), 0);
+    }
+
+    function sumQty(parts) {
+      return parts.reduce((sum, part) => sum + (Number(part.qty || 0) || 0), 0);
+    }
+
     function buildScaledPartsFromBreakdown(spec, newWidth, newDepth, newHeight, overrides = {}) {
       const baseParts = spec.baseParts || [];
       if (!baseParts.length) return null;
@@ -476,31 +484,38 @@
         const type = inferPartType(part.name);
         const baseLength = Number(part.length_mm || 0);
         const baseWidthMm = Number(part.width_mm || 0);
+        const baseQty = Number(part.qty || 0);
         let lengthMm = baseLength;
         let widthMm = baseWidthMm;
-        let qty = Number(part.qty || 0);
+        let qty = baseQty;
         const baseArea = baseLength && baseWidthMm && qty
           ? (baseLength * baseWidthMm / 1e6) * qty
           : (part.area_m2 || 0);
+        let areaScale = 1;
 
         if (type === 'shelf') {
           lengthMm = Math.round(baseLength * rw);
           widthMm = Math.round(baseWidthMm * rd);
           qty = overrideShelves > 0 ? overrideShelves : qty;
+          areaScale = rw * rd;
         } else if (type === 'side') {
           lengthMm = Math.round(baseLength * rh);
           widthMm = Math.round(baseWidthMm * rd);
+          areaScale = rh * rd;
         } else if (type === 'base') {
           lengthMm = Math.round(baseLength * rw);
           widthMm = Math.round(baseWidthMm * rd);
+          areaScale = rw * rd;
         } else if (type === 'partition') {
           lengthMm = Math.round(baseLength * rh);
           widthMm = Math.round(baseWidthMm * rd);
           if (sections) {
             qty = Math.max(sections - 1, 0);
           }
+          areaScale = rh * rd;
         } else if (type === 'back') {
           lengthMm = Math.round(baseLength * rh);
+          areaScale = rh * rw;
           if (qty > 1 && baseWidthMm * qty > 0) {
             const baseTotal = baseWidthMm * qty;
             const ratio = baseWidth ? baseTotal / baseWidth : 1;
@@ -518,11 +533,16 @@
         } else {
           lengthMm = Math.round(baseLength * rw);
           widthMm = Math.round(baseWidthMm * rd);
+          areaScale = rw * rd;
         }
 
-        const area = lengthMm && widthMm && qty
+        let area = lengthMm && widthMm && qty
           ? (lengthMm * widthMm / 1e6) * qty
           : 0;
+        if (!area && baseArea) {
+          const qtyRatio = baseQty > 0 ? qty / baseQty : 1;
+          area = baseArea * areaScale * qtyRatio;
+        }
 
         return {
           ...part,
@@ -1014,19 +1034,22 @@
           }, 0);
         }
         const baseDspForRatio = baseDspCost > 0 ? baseDspCost : baseMaterialsCost;
-        const areaRatio = baseDspForRatio > 0 ? newDspCost / baseDspForRatio : 1;
+        const dspRatio = baseDspForRatio > 0 ? newDspCost / baseDspForRatio : 1;
+        const baseAreaTotal = useBreakdown ? sumArea(spec.baseParts || []) : 0;
+        const newAreaTotal = useBreakdown ? sumArea(scaledParts || []) : 0;
+        const actualAreaRatio = baseAreaTotal > 0 ? newAreaTotal / baseAreaTotal : dspRatio;
 
-        const baseParts = sumPartsQty(spec.corpus || []);
-        const newParts = sumPartsQty(updatedSpec.corpus || []);
+        const baseParts = useBreakdown ? sumQty(spec.baseParts || []) : sumPartsQty(spec.corpus || []);
+        const newParts = useBreakdown ? sumQty(scaledParts || []) : sumPartsQty(updatedSpec.corpus || []);
         const baseSections = inferSectionCount(spec);
         const newSections = corpusResult.sectionCount || baseSections || 1;
         const partsRatio = baseParts > 0 ? newParts / baseParts : 1;
         const sectionsRatio = baseSections > 0 ? newSections / baseSections : 1;
 
-        const edgeRatio = areaRatio || partsRatio;
+        const edgeRatio = actualAreaRatio || partsRatio;
         const newEdgeCost = baseEdgeCost * edgeRatio;
-        const newPlasticCost = basePlasticCost * areaRatio;
-        const newFabricCost = baseFabricCost * areaRatio;
+        const newPlasticCost = basePlasticCost * actualAreaRatio;
+        const newFabricCost = baseFabricCost * actualAreaRatio;
         const newHardwareCost = baseHardwareCost * sectionsRatio;
         const newPackCost = basePackCost * partsRatio;
         const newLaborCost = baseLaborCost * sectionsRatio;

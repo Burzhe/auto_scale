@@ -721,12 +721,16 @@ function inferAreaColumn(sheet, costColIndex, detailsStartRow, totalsRow) {
     const totalsValue = parseNumericValue(totalsCell?.v);
     if (!Number.isFinite(totalsValue) || totalsValue <= 0) return false;
     let hits = 0;
+    let fractionalHits = 0;
     for (let row = detailsStartRow; row < Math.min(detailsStartRow + 10, totalsRow || detailsStartRow + 10); row += 1) {
       const cell = readSheetCellValue(sheet, row, colIndex);
       const value = parseNumericValue(cell?.v);
-      if (Number.isFinite(value) && value > 0) hits += 1;
+      if (Number.isFinite(value) && value > 0) {
+        hits += 1;
+        if (Math.abs(value % 1) > 0) fractionalHits += 1;
+      }
     }
-    return hits >= 2;
+    return hits >= 2 && fractionalHits >= 1;
   };
 
   const defaultIndex = costColIndex - 1;
@@ -1042,6 +1046,10 @@ function buildCalcSummary(workbook, anchors, mapping, detailsSheetName) {
     const sheetName = anchorCell?.sheetName || detailsSheetName || mapping.detailsSheet;
     const sheet = sheetName ? workbook.Sheets[sheetName] : null;
     const detectedTable = sheet ? detectMaterialTable(sheet) : null;
+    let detectionWarning = null;
+    if (!detectedTable?.confidence) {
+      detectionWarning = 'Автодетект таблицы ДСП неуверен — проверьте маппинг деталей.';
+    }
     const tableInfo = detectedTable?.confidence
       ? detectedTable
       : {
@@ -1075,6 +1083,9 @@ function buildCalcSummary(workbook, anchors, mapping, detailsSheetName) {
       coverageWarning = coverageWarning || 'У формулы нет cached value, использую сумму по деталям.';
     } else {
       coverage = computeCoverage(breakdownSum, totalValue);
+    }
+    if (detectionWarning) {
+      coverageWarning = coverageWarning ? `${coverageWarning} ${detectionWarning}` : detectionWarning;
     }
 
     const coverageOutOfRange = coverage === null || coverage < 0.95 || coverage > 1.05;
