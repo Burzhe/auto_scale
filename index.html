@@ -90,15 +90,15 @@
             <h3>2. Габариты</h3>
             <div class="row">
               <label>Ячейка с размерами</label>
-              <input type="text" id="dims-cell" placeholder="A43">
+              <input type="text" id="dims-cell" placeholder="A43" data-cell-input>
             </div>
             <div class="row">
               <label>Ширина</label>
-              <input type="text" id="dims-width" placeholder="B5">
+              <input type="text" id="dims-width" placeholder="B5" data-cell-input>
               <label>Глубина</label>
-              <input type="text" id="dims-depth" placeholder="C5">
+              <input type="text" id="dims-depth" placeholder="C5" data-cell-input>
               <label>Высота</label>
-              <input type="text" id="dims-height" placeholder="D5">
+              <input type="text" id="dims-height" placeholder="D5" data-cell-input>
             </div>
             <label class="checkbox">
               <input type="checkbox" id="dims-auto">
@@ -173,6 +173,9 @@
     </section>
 
     <section id="results-screen" class="screen hidden">
+      <div class="toolbar">
+        <button id="back-btn" class="ghost">← Назад к настройкам</button>
+      </div>
       <div class="card">
         <h2>Текущие параметры</h2>
         <div class="params">

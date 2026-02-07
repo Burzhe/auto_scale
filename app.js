@@ -6,6 +6,8 @@ const state = {
   worker: null,
   activeSheet: null,
   previewHoverBound: false,
+  activeCellInput: null,
+  previewClickBound: false,
 };
 
 const COLUMN_LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
@@ -89,6 +91,7 @@ function renderPreview(sheet) {
   }
 
   attachPreviewHover();
+  attachCellSelection();
 }
 
 function highlightColumn(colIndex) {
@@ -148,9 +151,44 @@ function attachPreviewHover() {
   state.previewHoverBound = true;
 }
 
+function attachCellSelection() {
+  if (state.previewClickBound) return;
+  const table = document.getElementById('preview-table');
+  const indicator = document.getElementById('cursor-indicator');
+  table.addEventListener('click', (event) => {
+    const cell = event.target.closest('td');
+    if (!cell || !state.activeCellInput) return;
+    const rowIndex = Number(cell.dataset.row);
+    const colIndex = Number(cell.dataset.col);
+    if (Number.isNaN(rowIndex) || Number.isNaN(colIndex)) return;
+    const cellRef = `${colIndexToLetter(colIndex)}${rowIndex + 1}`;
+    state.activeCellInput.value = cellRef;
+    if (indicator) {
+      indicator.textContent = `Выбрана ячейка: ${cellRef}`;
+    }
+  });
+
+  state.previewClickBound = true;
+}
+
 function readCell(sheet, cellRef) {
   const cell = sheet[cellRef];
-  return cell ? cell.v : null;
+  return cell ? cell.v : undefined;
+}
+
+function normalizeCellRef(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function readCellValue(sheet, cellRef) {
+  if (!cellRef) return undefined;
+  return readCell(sheet, normalizeCellRef(cellRef));
+}
+
+function readCellNumber(sheet, cellRef) {
+  const value = readCellValue(sheet, cellRef);
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function parseDimensions(sheet, mapping) {
@@ -159,7 +197,7 @@ function parseDimensions(sheet, mapping) {
   let height;
 
   if (mapping.dimensionsCell) {
-    const value = String(readCell(sheet, mapping.dimensionsCell) || '').trim();
+    const value = String(readCellValue(sheet, mapping.dimensionsCell) || '').trim();
     const match = value.match(/(\d{3,4})\s*[*xх×]\s*(\d{3,4})\s*[*xх×]\s*(\d{3,4})/i);
     if (match) {
       width = Number(match[1]);
@@ -169,16 +207,16 @@ function parseDimensions(sheet, mapping) {
   }
 
   if (!width && mapping.widthCell) {
-    width = Number(readCell(sheet, mapping.widthCell));
+    width = readCellNumber(sheet, mapping.widthCell);
   }
   if (!depth && mapping.depthCell) {
-    depth = Number(readCell(sheet, mapping.depthCell));
+    depth = readCellNumber(sheet, mapping.depthCell);
   }
   if (!height && mapping.heightCell) {
-    height = Number(readCell(sheet, mapping.heightCell));
+    height = readCellNumber(sheet, mapping.heightCell);
   }
 
-  return { width, depth, height };
+  return { width: width || null, depth: depth || null, height: height || null };
 }
 
 function parseMaterialDictionary(sheet, mapping) {
@@ -311,10 +349,10 @@ function applyMappingToUI(mapping) {
   if (Number.isInteger(mapping.materialPriceCol)) document.getElementById('mat-price-col').value = colIndexToLetter(mapping.materialPriceCol);
   if (Number.isInteger(mapping.materialWasteCol)) document.getElementById('mat-waste-col').value = colIndexToLetter(mapping.materialWasteCol);
   if (Number.isInteger(mapping.materialIdCol)) document.getElementById('mat-id-col').value = colIndexToLetter(mapping.materialIdCol);
-  if (mapping.dimensionsCell) document.getElementById('dims-cell').value = mapping.dimensionsCell;
-  if (mapping.widthCell) document.getElementById('dims-width').value = mapping.widthCell;
-  if (mapping.depthCell) document.getElementById('dims-depth').value = mapping.depthCell;
-  if (mapping.heightCell) document.getElementById('dims-height').value = mapping.heightCell;
+  if (mapping.dimensionsCell) document.getElementById('dims-cell').value = normalizeCellRef(mapping.dimensionsCell);
+  if (mapping.widthCell) document.getElementById('dims-width').value = normalizeCellRef(mapping.widthCell);
+  if (mapping.depthCell) document.getElementById('dims-depth').value = normalizeCellRef(mapping.depthCell);
+  if (mapping.heightCell) document.getElementById('dims-height').value = normalizeCellRef(mapping.heightCell);
   if (mapping.detailsHeaderRow) document.getElementById('details-header').value = mapping.detailsHeaderRow;
   if (mapping.detailsStartRow) document.getElementById('details-start').value = mapping.detailsStartRow;
   if (mapping.detailsEndRow) document.getElementById('details-end').value = mapping.detailsEndRow;
@@ -357,10 +395,10 @@ function collectMapping() {
     materialPriceCol: letterToColIndex(document.getElementById('mat-price-col').value),
     materialWasteCol: letterToColIndex(document.getElementById('mat-waste-col').value),
     materialIdCol: letterToColIndex(document.getElementById('mat-id-col').value),
-    dimensionsCell: document.getElementById('dims-cell').value.trim(),
-    widthCell: document.getElementById('dims-width').value.trim(),
-    depthCell: document.getElementById('dims-depth').value.trim(),
-    heightCell: document.getElementById('dims-height').value.trim(),
+    dimensionsCell: normalizeCellRef(document.getElementById('dims-cell').value),
+    widthCell: normalizeCellRef(document.getElementById('dims-width').value),
+    depthCell: normalizeCellRef(document.getElementById('dims-depth').value),
+    heightCell: normalizeCellRef(document.getElementById('dims-height').value),
     detailsHeaderRow: Number(document.getElementById('details-header').value),
     detailsStartRow: Number(document.getElementById('details-start').value),
     detailsEndRow: Number(document.getElementById('details-end').value),
@@ -400,12 +438,17 @@ function formatNumber(value, unit = '') {
   return `${Number(value).toLocaleString('ru-RU')} ${unit}`.trim();
 }
 
+function formatDimensions(dims) {
+  if (!dims || !dims.width || !dims.depth || !dims.height) return '—';
+  return `${dims.width}×${dims.depth}×${dims.height}`;
+}
+
 function renderResults(spec, weight, price, warnings) {
-  document.getElementById('current-dims').textContent = `${spec.dims.width}×${spec.dims.depth}×${spec.dims.height}`;
+  document.getElementById('current-dims').textContent = formatDimensions(spec.dims);
   document.getElementById('current-weight').textContent = formatNumber(weight, 'кг');
   document.getElementById('current-price').textContent = formatNumber(price, '₽');
 
-  document.getElementById('new-dims').textContent = `${spec.dims.width}×${spec.dims.depth}×${spec.dims.height}`;
+  document.getElementById('new-dims').textContent = formatDimensions(spec.dims);
   document.getElementById('new-weight').textContent = formatNumber(weight, 'кг');
   document.getElementById('new-price').textContent = formatNumber(price, '₽');
 
@@ -546,7 +589,7 @@ function attachEventHandlers() {
     state.mapping = collectMapping();
     state.originalSpec = parseExcelWithMapping(state.workbook, state.mapping);
     showScreen('results-screen');
-    document.getElementById('current-dims').textContent = `${state.originalSpec.dims.width}×${state.originalSpec.dims.depth}×${state.originalSpec.dims.height}`;
+    document.getElementById('current-dims').textContent = formatDimensions(state.originalSpec.dims);
   });
 
   document.getElementById('calculate-btn').addEventListener('click', () => {
@@ -576,6 +619,10 @@ function attachEventHandlers() {
     showScreen('upload-screen');
   });
 
+  document.getElementById('back-btn').addEventListener('click', () => {
+    showScreen('mapping-screen');
+  });
+
   document.querySelectorAll('.auto-btn').forEach((btn) => {
     btn.addEventListener('click', () => updateMappingFromAuto(btn.dataset.auto));
   });
@@ -589,6 +636,14 @@ function attachEventHandlers() {
   document.getElementById('template-select').addEventListener('change', (event) => {
     const mapping = loadTemplate(event.target.value);
     if (mapping) applyMappingToUI(mapping);
+  });
+
+  document.querySelectorAll('input[data-cell-input]').forEach((input) => {
+    const setActive = () => {
+      state.activeCellInput = input;
+    };
+    input.addEventListener('focus', setActive);
+    input.addEventListener('click', setActive);
   });
 }
 
