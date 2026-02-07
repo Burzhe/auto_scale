@@ -8,6 +8,7 @@ const state = {
   previewHoverBound: false,
   activeCellInput: null,
   previewClickBound: false,
+  activeResultsTab: 'corpus',
 };
 
 const COLUMN_LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
@@ -581,23 +582,47 @@ function renderBaseSummary(spec) {
   if (!heightInput.value) heightInput.value = spec.dims.height || '';
 }
 
-function renderResults(spec, weight, price, warnings) {
-  document.getElementById('current-dims').textContent = formatDimensions(spec.dims);
-
-  document.getElementById('new-dims').textContent = formatDimensions(spec.dims);
-  document.getElementById('new-weight').textContent = formatNumber(weight, 'кг');
-  document.getElementById('new-price').textContent = formatNumber(price, '₽');
-
-  const warningsBox = document.getElementById('warnings');
-  warningsBox.innerHTML = '';
-  warnings.forEach((warning) => {
-    const item = document.createElement('div');
-    item.textContent = warning;
-    warningsBox.appendChild(item);
-  });
-
+function renderResultsTable(type, spec) {
   const table = document.getElementById('results-table');
   table.innerHTML = '';
+  if (type === 'furniture') {
+    const headers = ['Код', 'Наименование', 'Кол-во', 'Ед.', 'Цена ₽'];
+    const headerRow = document.createElement('tr');
+    headers.forEach((text) => {
+      const th = document.createElement('th');
+      th.textContent = text;
+      headerRow.appendChild(th);
+    });
+    table.appendChild(headerRow);
+
+    if (!spec.furniture || spec.furniture.length === 0) {
+      const emptyRow = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = headers.length;
+      td.textContent = 'Фурнитура не найдена.';
+      emptyRow.appendChild(td);
+      table.appendChild(emptyRow);
+      return;
+    }
+
+    spec.furniture.forEach((item) => {
+      const tr = document.createElement('tr');
+      [
+        item.code,
+        item.name,
+        item.qty,
+        item.unit,
+        item.price,
+      ].forEach((value) => {
+        const td = document.createElement('td');
+        td.textContent = value ?? '';
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+    return;
+  }
+
   const headers = ['Наименование', 'Материал', 'Длина', 'Ширина', 'Толщина', 'Кол-во'];
   const headerRow = document.createElement('tr');
   headers.forEach((text) => {
@@ -623,6 +648,52 @@ function renderResults(spec, weight, price, warnings) {
     });
     table.appendChild(tr);
   });
+}
+
+function setActiveResultsTab(type) {
+  document.querySelectorAll('.tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.tab === type);
+  });
+  state.activeResultsTab = type;
+}
+
+function renderMaterialSpecOptions(spec) {
+  const select = document.getElementById('material-spec-select');
+  if (!select) return;
+  const materials = Object.values(spec.materials || {})
+    .map((mat) => mat.name)
+    .filter(Boolean);
+  const unique = [...new Set(materials)];
+  select.innerHTML = '<option value="">Выберите материал</option>';
+  unique.forEach((name) => {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name;
+    select.appendChild(option);
+  });
+}
+
+function renderResults(spec, weight, price, warnings) {
+  if (state.originalSpec) {
+    renderBaseSummary(state.originalSpec);
+  }
+
+  document.getElementById('new-dims').textContent = formatDimensions(spec.dims);
+  document.getElementById('new-weight').textContent = formatNumber(weight, 'кг');
+  document.getElementById('new-price').textContent = formatNumber(price, '₽');
+
+  const warningsBox = document.getElementById('warnings');
+  warningsBox.innerHTML = '';
+  warnings.forEach((warning) => {
+    const item = document.createElement('div');
+    item.textContent = warning;
+    warningsBox.appendChild(item);
+  });
+
+  const activeTab = state.activeResultsTab || document.querySelector('.tab.active')?.dataset.tab || 'corpus';
+  setActiveResultsTab(activeTab);
+  renderResultsTable(activeTab, spec);
+  renderMaterialSpecOptions(spec);
 
   document.getElementById('results-card').classList.remove('hidden');
 }
@@ -836,6 +907,16 @@ function attachEventHandlers() {
 
   document.querySelectorAll('.auto-btn').forEach((btn) => {
     btn.addEventListener('click', () => updateMappingFromAuto(btn.dataset.auto));
+  });
+
+  document.querySelectorAll('.tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const type = tab.dataset.tab;
+      setActiveResultsTab(type);
+      if (state.newSpec) {
+        renderResultsTable(type, state.newSpec);
+      }
+    });
   });
 
   document.getElementById('save-template-btn').addEventListener('click', () => {

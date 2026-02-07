@@ -190,7 +190,7 @@
         <button id="back-btn" class="ghost">← Назад к настройкам</button>
       </div>
       <div class="card">
-        <h2>Текущие параметры</h2>
+        <h2>Базовые параметры</h2>
         <div class="params">
           <div>Габариты: <strong id="current-dims">—</strong></div>
           <div>Вес: <strong id="current-weight">—</strong></div>
@@ -251,6 +251,17 @@
         <table id="results-table"></table>
 
         <button id="export-btn" class="primary">Экспорт в Excel</button>
+
+        <details class="material-spec">
+          <summary>Спецификация материала (в разработке)</summary>
+          <div class="material-spec-body">
+            <label for="material-spec-select">Материал</label>
+            <select id="material-spec-select">
+              <option value="">Выберите материал</option>
+            </select>
+            <p class="hint">Здесь будет пересчёт в листы и длины кромок.</p>
+          </div>
+        </details>
       </div>
     </section>
   </main>
