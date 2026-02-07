@@ -201,6 +201,17 @@
             <input type="number" id="new-height" placeholder="2800">
           </div>
         </div>
+        <div class="dimension-inputs">
+          <div>
+            <label>Секции (шт)</label>
+            <input type="number" id="new-sections" placeholder="Авто">
+          </div>
+          <div>
+            <label>Полки (шт)</label>
+            <input type="number" id="new-shelves" placeholder="Авто">
+          </div>
+        </div>
+        <p class="hint">Оставьте пустым, чтобы применить авторасчёт. При ширине от 800&nbsp;мм добавляется минимум одна перегородка.</p>
         <button id="calculate-btn" class="primary">✨ Рассчитать</button>
       </div>
 
@@ -210,6 +221,11 @@
           <div>Габариты: <strong id="new-dims">—</strong></div>
           <div>Вес: <strong id="new-weight">—</strong></div>
           <div>Цена: <strong id="new-price">—</strong></div>
+        </div>
+        <div class="params">
+          <div>Секции: <strong id="structure-sections">—</strong></div>
+          <div>Перегородки: <strong id="structure-partitions">—</strong></div>
+          <div>Полки: <strong id="structure-shelves">—</strong></div>
         </div>
 
         <div id="warnings" class="warnings"></div>
@@ -233,10 +249,12 @@
     const PARTITION_THRESHOLD = 800;
 
     function splitSections(totalWidth) {
-      if (totalWidth <= MAX_SECTION_WIDTH) {
+      const minSections = totalWidth >= PARTITION_THRESHOLD ? 2 : 1;
+      if (totalWidth <= MAX_SECTION_WIDTH && minSections === 1) {
         return [totalWidth];
       }
-      const numSections = Math.ceil(totalWidth / MAX_SECTION_WIDTH);
+      const requiredSections = Math.ceil(totalWidth / MAX_SECTION_WIDTH);
+      const numSections = Math.max(requiredSections, minSections);
       const baseWidth = Math.floor(totalWidth / numSections);
       const remainder = totalWidth - baseWidth * numSections;
       const sections = Array(numSections).fill(baseWidth);
@@ -273,14 +291,22 @@
       return 'other';
     }
 
-    function recalculateCorpus(spec, newWidth, newDepth, newHeight) {
-      const sections = splitSections(newWidth);
+    function recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides = {}) {
+      const minSections = newWidth >= PARTITION_THRESHOLD ? 2 : 1;
+      let sectionCountOverride = Number(overrides.sectionCount || 0);
+      if (sectionCountOverride && sectionCountOverride < minSections) {
+        sectionCountOverride = minSections;
+      }
+      const sections = sectionCountOverride
+        ? distributeEvenly(newWidth, sectionCountOverride)
+        : splitSections(newWidth);
       const corpus = [];
       const warnings = [];
       const sectionCount = sections.length;
       const spansPerSection = sections.map(calcSpansForSection);
-
-      const totalSpans = spansPerSection.reduce((sum, value) => sum + value, 0);
+      const autoSpans = spansPerSection.reduce((sum, value) => sum + value, 0);
+      const overrideShelves = Number(overrides.shelfCount || 0);
+      const totalSpans = overrideShelves > 0 ? overrideShelves : autoSpans;
       const shelfSpanWidth = Math.round(newWidth / totalSpans);
 
       spec.corpus.forEach((part) => {
@@ -346,7 +372,24 @@
         corpus.push(updated);
       });
 
-      return { corpus, warnings, sectionCount, spansPerSection };
+      if (newWidth >= PARTITION_THRESHOLD && sectionCount < 2) {
+        warnings.push('При ширине от 800 мм нужна минимум одна вертикальная перегородка.');
+      }
+      if (sectionCountOverride && sectionCountOverride < minSections) {
+        warnings.push(`Количество секций увеличено до ${minSections} для соблюдения правил.`);
+      }
+      if (overrideShelves > 0 && totalSpans !== autoSpans) {
+        warnings.push(`Количество полок установлено вручную: ${totalSpans} шт.`);
+      }
+
+      return {
+        corpus,
+        warnings,
+        sectionCount,
+        spansPerSection,
+        totalShelves: totalSpans,
+        partitionCount: Math.max(sectionCount - 1, 0),
+      };
     }
 
     function recalculateFurniture(spec, sectionCount, spansPerSection) {
@@ -415,8 +458,13 @@
     function calculatePrice(parts, materials) {
       let total = 0;
       parts.forEach((part) => {
-        if (!part.length_mm || !part.width_mm || !part.qty) return;
-        const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000) * part.qty;
+        if (!part.length_mm || !part.qty) return;
+        const widths = part.widths_mm || [part.width_mm];
+        let areaM2 = 0;
+        for (let i = 0; i < part.qty; i += 1) {
+          const w = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
+          areaM2 += (part.length_mm / 1000) * (w / 1000);
+        }
         const material = materials[part.material_id];
         if (material) {
           const wasteFactor = 1 + (material.waste || 0) / 100;
@@ -429,8 +477,8 @@
     self.onmessage = (event) => {
       const { type, payload } = event.data;
       if (type === 'calculate') {
-        const { spec, newWidth, newDepth, newHeight } = payload;
-        const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight);
+        const { spec, newWidth, newDepth, newHeight, overrides } = payload;
+        const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides);
         const furnitureResult = recalculateFurniture(spec, corpusResult.sectionCount, corpusResult.spansPerSection);
         const updatedSpec = {
           ...spec,
@@ -447,6 +495,11 @@
             warnings: [...corpusResult.warnings, ...furnitureResult.warnings],
             weight,
             price,
+            structure: {
+              sections: corpusResult.sectionCount,
+              shelves: corpusResult.totalShelves,
+              partitions: corpusResult.partitionCount,
+            },
           },
         });
       }

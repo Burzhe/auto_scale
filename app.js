@@ -11,6 +11,7 @@ const state = {
 };
 
 const COLUMN_LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
+const MATERIAL_DENSITY = 720;
 
 function setUploadError(message) {
   const box = document.getElementById('upload-error');
@@ -443,10 +444,52 @@ function formatDimensions(dims) {
   return `${dims.width}×${dims.depth}×${dims.height}`;
 }
 
+function getMaterialDensity(materialName) {
+  const mat = String(materialName || '').toLowerCase();
+  if (mat.includes('лдсп') || mat.includes('дсп')) return 720;
+  if (mat.includes('мдф')) return 750;
+  if (mat.includes('фанер')) return 650;
+  if (mat.includes('двп') || mat.includes('оргалит')) return 850;
+  if (mat.includes('стекл')) return 2500;
+  return MATERIAL_DENSITY;
+}
+
+function calculateWeight(parts) {
+  let totalKg = 0;
+  parts.forEach((part) => {
+    if (!part.thickness || !part.length_mm || !part.qty) return;
+    const density = getMaterialDensity(part.material);
+    const widths = part.widths_mm || [part.width_mm];
+    for (let i = 0; i < part.qty; i += 1) {
+      const w = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
+      const volumeM3 = (part.length_mm / 1000) * (w / 1000) * (part.thickness / 1000);
+      totalKg += volumeM3 * density;
+    }
+  });
+  return Math.round(totalKg * 100) / 100;
+}
+
+function calculatePrice(parts, materials) {
+  let total = 0;
+  parts.forEach((part) => {
+    if (!part.length_mm || !part.qty) return;
+    const widths = part.widths_mm || [part.width_mm];
+    let areaM2 = 0;
+    for (let i = 0; i < part.qty; i += 1) {
+      const w = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
+      areaM2 += (part.length_mm / 1000) * (w / 1000);
+    }
+    const material = materials[part.material_id];
+    if (material) {
+      const wasteFactor = 1 + (material.waste || 0) / 100;
+      total += areaM2 * material.price * wasteFactor;
+    }
+  });
+  return Math.round(total);
+}
+
 function renderResults(spec, weight, price, warnings) {
   document.getElementById('current-dims').textContent = formatDimensions(spec.dims);
-  document.getElementById('current-weight').textContent = formatNumber(weight, 'кг');
-  document.getElementById('current-price').textContent = formatNumber(price, '₽');
 
   document.getElementById('new-dims').textContent = formatDimensions(spec.dims);
   document.getElementById('new-weight').textContent = formatNumber(weight, 'кг');
@@ -477,7 +520,7 @@ function renderResults(spec, weight, price, warnings) {
       part.name,
       part.material,
       part.length_mm,
-      part.width_mm,
+      part.widths_mm ? part.widths_mm.join(', ') : part.width_mm,
       part.thickness,
       part.qty,
     ].forEach((value) => {
@@ -503,6 +546,10 @@ function exportToExcel(spec) {
 function updateMappingFromAuto(type) {
   const sheet = state.workbook.Sheets[state.activeSheet];
   const mapping = autoDetectMapping(sheet);
+  if (!mapping || Object.keys(mapping).length === 0) {
+    alert('Не удалось найти структуру. Проверьте выбранный лист и попробуйте снова.');
+    return;
+  }
   if (type === 'materials') {
     applyMappingToUI(mapping);
   }
@@ -589,25 +636,45 @@ function attachEventHandlers() {
     state.mapping = collectMapping();
     state.originalSpec = parseExcelWithMapping(state.workbook, state.mapping);
     showScreen('results-screen');
+    const baseWeight = calculateWeight(state.originalSpec.corpus);
+    const basePrice = calculatePrice(state.originalSpec.corpus, state.originalSpec.materials || {});
     document.getElementById('current-dims').textContent = formatDimensions(state.originalSpec.dims);
+    document.getElementById('current-weight').textContent = formatNumber(baseWeight, 'кг');
+    document.getElementById('current-price').textContent = formatNumber(basePrice, '₽');
   });
 
   document.getElementById('calculate-btn').addEventListener('click', () => {
     const newWidth = Number(document.getElementById('new-width').value) || state.originalSpec.dims.width;
     const newDepth = Number(document.getElementById('new-depth').value) || state.originalSpec.dims.depth;
     const newHeight = Number(document.getElementById('new-height').value) || state.originalSpec.dims.height;
+    const newSections = Number(document.getElementById('new-sections').value);
+    const newShelves = Number(document.getElementById('new-shelves').value);
 
     const worker = getWorker();
     worker.onmessage = (event) => {
       if (event.data.type === 'result') {
-        const { spec, warnings, weight, price } = event.data.payload;
+        const { spec, warnings, weight, price, structure } = event.data.payload;
         state.newSpec = spec;
         renderResults(spec, weight, price, warnings);
+        if (structure) {
+          document.getElementById('structure-sections').textContent = formatNumber(structure.sections);
+          document.getElementById('structure-partitions').textContent = formatNumber(structure.partitions);
+          document.getElementById('structure-shelves').textContent = formatNumber(structure.shelves);
+        }
       }
     };
     worker.postMessage({
       type: 'calculate',
-      payload: { spec: state.originalSpec, newWidth, newDepth, newHeight },
+      payload: {
+        spec: state.originalSpec,
+        newWidth,
+        newDepth,
+        newHeight,
+        overrides: {
+          sectionCount: Number.isFinite(newSections) && newSections > 0 ? newSections : null,
+          shelfCount: Number.isFinite(newShelves) && newShelves > 0 ? newShelves : null,
+        },
+      },
     });
   });
 
