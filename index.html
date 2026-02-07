@@ -321,23 +321,83 @@
       return 'other';
     }
 
-    function recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides = {}) {
-      const minSections = newWidth >= PARTITION_THRESHOLD ? 2 : 1;
-      let sectionCountOverride = Number(overrides.sectionCount || 0);
-      if (sectionCountOverride && sectionCountOverride < minSections) {
-        sectionCountOverride = minSections;
+    function inferSectionCount(spec) {
+      const backQty = spec.corpus.reduce((sum, part) => {
+        return inferPartType(part.name) === 'back' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      if (backQty > 0) {
+        return Math.max(1, Math.round(backQty));
       }
-      const sections = sectionCountOverride
-        ? distributeEvenly(newWidth, sectionCountOverride)
-        : splitSections(newWidth);
+      const partitionsQty = spec.corpus.reduce((sum, part) => {
+        return inferPartType(part.name) === 'partition' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      if (partitionsQty > 0) {
+        return Math.max(1, Math.round(partitionsQty) + 1);
+      }
+      const fallback = splitSections(spec.dims.width || 0).length;
+      return fallback || 1;
+    }
+
+    function recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides = {}) {
+      const sameDimensions = newWidth === spec.dims.width
+        && newDepth === spec.dims.depth
+        && newHeight === spec.dims.height;
+      const hasOverrides = Boolean(overrides.sectionCount || overrides.shelfCount);
+      if (sameDimensions && !hasOverrides) {
+        const inferredSections = inferSectionCount(spec);
+        const sections = distributeEvenly(spec.dims.width || 0, inferredSections);
+        return {
+          corpus: spec.corpus.map((part) => ({ ...part })),
+          warnings: [],
+          sectionCount: inferredSections,
+          sections,
+          spansPerSection: sections.map(calcSpansForSection),
+          totalShelves: spec.corpus.reduce((sum, part) => {
+            return inferPartType(part.name) === 'shelf' ? sum + (part.qty || 0) : sum;
+          }, 0),
+          partitionCount: Math.max(inferredSections - 1, 0),
+        };
+      }
+
+      const baseSectionCount = inferSectionCount(spec);
+      const minSections = baseSectionCount || (newWidth >= PARTITION_THRESHOLD ? 2 : 1);
+      const requiredSections = Math.ceil(newWidth / MAX_SECTION_WIDTH);
+      const requestedSectionCount = Number(overrides.sectionCount || 0);
+      let sectionCountOverride = requestedSectionCount;
+      if (sectionCountOverride) {
+        if (sectionCountOverride < minSections) {
+          sectionCountOverride = minSections;
+        }
+        if (sectionCountOverride < requiredSections) {
+          sectionCountOverride = requiredSections;
+        }
+      }
+      const targetSections = sectionCountOverride || Math.max(minSections, requiredSections);
+      const sections = distributeEvenly(newWidth, targetSections);
       const corpus = [];
       const warnings = [];
       const sectionCount = sections.length;
       const spansPerSection = sections.map(calcSpansForSection);
       const autoSpans = spansPerSection.reduce((sum, value) => sum + value, 0);
       const overrideShelves = Number(overrides.shelfCount || 0);
-      const totalSpans = overrideShelves > 0 ? overrideShelves : autoSpans;
-      const shelfSpanWidth = Math.round(newWidth / totalSpans);
+      const oldShelves = spec.corpus.reduce((sum, part) => {
+        return inferPartType(part.name) === 'shelf' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const baseShelvesPerSection = baseSectionCount ? oldShelves / baseSectionCount : 0;
+      const autoShelves = baseShelvesPerSection
+        ? Math.round(baseShelvesPerSection * sectionCount)
+        : autoSpans;
+      const totalShelves = overrideShelves > 0 ? overrideShelves : autoShelves;
+      const shelfWidths = [];
+      if (totalShelves > 0) {
+        const shelvesPerSection = distributeEvenly(totalShelves, sectionCount);
+        sections.forEach((sectionWidth, index) => {
+          const count = shelvesPerSection[index] || 0;
+          for (let i = 0; i < count; i += 1) {
+            shelfWidths.push(sectionWidth);
+          }
+        });
+      }
 
       let facadeTemplate = null;
       let facadeTemplateName = '';
@@ -378,11 +438,16 @@
         }
 
         if (type === 'shelf') {
-          updated.length_mm = shelfSpanWidth;
+          const fallbackWidth = Math.round(newWidth / sectionCount);
+          updated.length_mm = shelfWidths[0] || fallbackWidth;
           updated.width_mm = newDepth;
-          updated.qty = totalSpans;
-          if (shelfSpanWidth > MAX_SHELF_SPAN) {
-            warnings.push(`Пролёт полки ${shelfSpanWidth}мм превышает ${MAX_SHELF_SPAN}мм.`);
+          updated.qty = totalShelves;
+          if (shelfWidths.length) {
+            updated.widths_mm = shelfWidths;
+          }
+          const maxShelfWidth = shelfWidths.length ? Math.max(...shelfWidths) : updated.length_mm;
+          if (maxShelfWidth > MAX_SHELF_SPAN) {
+            warnings.push(`Пролёт полки ${maxShelfWidth}мм превышает ${MAX_SHELF_SPAN}мм.`);
           }
         }
 
@@ -434,11 +499,14 @@
       if (newWidth >= PARTITION_THRESHOLD && sectionCount < 2) {
         warnings.push('При ширине от 800 мм нужна минимум одна вертикальная перегородка.');
       }
-      if (sectionCountOverride && sectionCountOverride < minSections) {
+      if (requestedSectionCount && requestedSectionCount < minSections) {
         warnings.push(`Количество секций увеличено до ${minSections} для соблюдения правил.`);
       }
-      if (overrideShelves > 0 && totalSpans !== autoSpans) {
-        warnings.push(`Количество полок установлено вручную: ${totalSpans} шт.`);
+      if (requestedSectionCount && requestedSectionCount < requiredSections) {
+        warnings.push(`Количество секций увеличено до ${requiredSections} для ограничения ширины секции.`);
+      }
+      if (overrideShelves > 0 && totalShelves !== autoShelves) {
+        warnings.push(`Количество полок установлено вручную: ${totalShelves} шт.`);
       }
 
       return {
@@ -447,7 +515,7 @@
         sectionCount,
         sections,
         spansPerSection,
-        totalShelves: totalSpans,
+        totalShelves,
         partitionCount: Math.max(sectionCount - 1, 0),
       };
     }
@@ -464,8 +532,8 @@
     function recalculateFurniture(spec, corpusResult, newHeight) {
       const furniture = [];
       const warnings = [];
-      const originalSections = splitSections(spec.dims.width || 0);
-      const oldSectionCount = originalSections.length || 1;
+      const oldSectionCount = inferSectionCount(spec);
+      const originalSections = distributeEvenly(spec.dims.width || 0, oldSectionCount);
       const newSections = corpusResult.sections || [];
       const oldSpans = originalSections.reduce((sum, width) => sum + calcSpansForSection(width), 0);
       const newSpans = (corpusResult.spansPerSection || []).reduce((sum, value) => sum + value, 0);
