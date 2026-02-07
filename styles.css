@@ -394,6 +394,14 @@ select {
   background: #f9fbfc;
 }
 
+.calc-debug-meta {
+  font-size: 12px;
+  color: var(--muted);
+  display: grid;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
 .calc-debug-title {
   font-weight: 600;
   margin-bottom: 8px;
