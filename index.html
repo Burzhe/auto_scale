@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wardrobe Calculator — OrgSpace</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="header">
+    <div class="logo">
+      <svg viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+        <circle cx="24" cy="24" r="22" fill="#00a86b" opacity="0.15"></circle>
+        <path d="M16 30c4 3 12 3 16-2 3-4 1-10-5-10-3 0-5 1-7 3-2-2-4-3-7-2-5 1-7 6-4 11 1 2 4 3 7 0z" fill="#00a86b"></path>
+      </svg>
+      <div>
+        <p class="logo-title">OrgSpace</p>
+        <h1>Wardrobe Calculator</h1>
+      </div>
+    </div>
+    <nav class="header-actions">
+      <button id="reset-btn" class="ghost">Новый расчёт</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="upload-screen" class="screen active">
+      <div class="card upload-card">
+        <h2>Загрузка файла</h2>
+        <p class="muted">Перетащите Excel-файл или выберите его вручную.</p>
+        <div class="drop-zone" id="drop-zone">
+          <p>Перетащите Excel сюда</p>
+          <span>или</span>
+          <label class="primary" for="file-input">Выбрать файл</label>
+          <input type="file" id="file-input" accept=".xls,.xlsx">
+        </div>
+        <div class="hint">Поддерживаются .xls и .xlsx. Расчёт происходит локально, без загрузки в интернет.</div>
+      </div>
+    </section>
+
+    <section id="mapping-screen" class="screen hidden">
+      <div class="toolbar">
+        <div class="template-controls">
+          <select id="template-select">
+            <option value="">Выбрать шаблон...</option>
+          </select>
+          <button id="save-template-btn" class="secondary">Сохранить шаблон</button>
+        </div>
+        <div class="sheet-controls">
+          <label>Лист:</label>
+          <select id="sheet-select"></select>
+        </div>
+      </div>
+
+      <div class="mapping-layout">
+        <div class="preview-table-wrap">
+          <table id="preview-table"></table>
+        </div>
+
+        <div class="mapping-panels">
+          <div class="panel">
+            <h3>1. Справочник материалов</h3>
+            <div class="row">
+              <label>Строка начала</label>
+              <input type="number" id="mat-start" min="1" value="8">
+              <label>Строка конца</label>
+              <input type="number" id="mat-end" min="1" value="40">
+            </div>
+            <div class="row">
+              <label>Название</label>
+              <select id="mat-name-col" data-highlight></select>
+              <label>Цена ₽/м²</label>
+              <select id="mat-price-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Отход %</label>
+              <select id="mat-waste-col" data-highlight></select>
+              <label>ID материала</label>
+              <select id="mat-id-col" data-highlight></select>
+            </div>
+            <p class="hint">Обычно ID материала в колонке F.</p>
+            <button class="secondary auto-btn" data-auto="materials">Автоопределить</button>
+          </div>
+
+          <div class="panel">
+            <h3>2. Габариты</h3>
+            <div class="row">
+              <label>Ячейка с размерами</label>
+              <input type="text" id="dims-cell" placeholder="A43">
+            </div>
+            <div class="row">
+              <label>Ширина</label>
+              <input type="text" id="dims-width" placeholder="B5">
+              <label>Глубина</label>
+              <input type="text" id="dims-depth" placeholder="C5">
+              <label>Высота</label>
+              <input type="text" id="dims-height" placeholder="D5">
+            </div>
+            <label class="checkbox">
+              <input type="checkbox" id="dims-auto">
+              Определить автоматически по задним стенкам
+            </label>
+            <button class="secondary auto-btn" data-auto="dimensions">Автоопределить</button>
+          </div>
+
+          <div class="panel">
+            <h3>3. Таблица деталей</h3>
+            <div class="row">
+              <label>Строка заголовков</label>
+              <input type="number" id="details-header" min="1" value="50">
+            </div>
+            <div class="row">
+              <label>Наименование</label>
+              <select id="details-name-col" data-highlight></select>
+              <label>Тлщн (ID)</label>
+              <select id="details-thickness-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Длина</label>
+              <select id="details-length-col" data-highlight></select>
+              <label>Ширина</label>
+              <select id="details-width-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Кол-во</label>
+              <select id="details-qty-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Строка начала</label>
+              <input type="number" id="details-start" min="1" value="51">
+              <label>Строка конца</label>
+              <input type="number" id="details-end" min="1" value="80">
+            </div>
+            <button class="secondary auto-btn" data-auto="details">Автоопределить</button>
+          </div>
+
+          <div class="panel">
+            <h3>4. Фурнитура (опционально)</h3>
+            <div class="row">
+              <label>Лист</label>
+              <select id="furniture-sheet"></select>
+            </div>
+            <div class="row">
+              <label>Строка заголовков</label>
+              <input type="number" id="furniture-header" min="1" value="7">
+            </div>
+            <div class="row">
+              <label>Код</label>
+              <select id="furniture-code-col" data-highlight></select>
+              <label>Количество</label>
+              <select id="furniture-qty-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Наименование</label>
+              <select id="furniture-name-col" data-highlight></select>
+              <label>Ед. изм</label>
+              <select id="furniture-unit-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Цена ₽</label>
+              <select id="furniture-price-col" data-highlight></select>
+            </div>
+            <button class="secondary auto-btn" data-auto="furniture">Автоопределить</button>
+          </div>
+        </div>
+      </div>
+
+      <button id="proceed-btn" class="primary">Продолжить →</button>
+    </section>
+
+    <section id="results-screen" class="screen hidden">
+      <div class="card">
+        <h2>Текущие параметры</h2>
+        <div class="params">
+          <div>Габариты: <strong id="current-dims">—</strong></div>
+          <div>Вес: <strong id="current-weight">—</strong></div>
+          <div>Цена: <strong id="current-price">—</strong></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Задайте новые размеры</h2>
+        <div class="dimension-inputs">
+          <div>
+            <label>Ширина (мм)</label>
+            <input type="number" id="new-width" placeholder="3000">
+          </div>
+          <div>
+            <label>Глубина (мм)</label>
+            <input type="number" id="new-depth" placeholder="600">
+          </div>
+          <div>
+            <label>Высота (мм)</label>
+            <input type="number" id="new-height" placeholder="2800">
+          </div>
+        </div>
+        <button id="calculate-btn" class="primary">✨ Рассчитать</button>
+      </div>
+
+      <div class="card hidden" id="results-card">
+        <h2>Новая спецификация</h2>
+        <div class="params">
+          <div>Габариты: <strong id="new-dims">—</strong></div>
+          <div>Вес: <strong id="new-weight">—</strong></div>
+          <div>Цена: <strong id="new-price">—</strong></div>
+        </div>
+
+        <div id="warnings" class="warnings"></div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="corpus">Корпус</button>
+          <button class="tab" data-tab="furniture">Фурнитура</button>
+        </div>
+
+        <table id="results-table"></table>
+
+        <button id="export-btn" class="primary">Экспорт в Excel</button>
+      </div>
+    </section>
+  </main>
+
+  <script id="worker-src" type="text/plain">
+    const MAX_SECTION_WIDTH = 1200;
+    const MAX_SHELF_SPAN = 800;
+    const MAX_FACADE_WIDTH = 600;
+    const PARTITION_THRESHOLD = 800;
+
+    function splitSections(totalWidth) {
+      if (totalWidth <= MAX_SECTION_WIDTH) {
+        return [totalWidth];
+      }
+      const numSections = Math.ceil(totalWidth / MAX_SECTION_WIDTH);
+      const baseWidth = Math.floor(totalWidth / numSections);
+      const remainder = totalWidth - baseWidth * numSections;
+      const sections = Array(numSections).fill(baseWidth);
+      for (let i = 0; i < remainder; i += 1) {
+        sections[i] += 1;
+      }
+      return sections;
+    }
+
+    function distributeEvenly(spanWidth, count) {
+      const base = Math.floor(spanWidth / count);
+      const remainder = spanWidth - base * count;
+      const widths = Array(count).fill(base);
+      for (let i = 0; i < remainder; i += 1) {
+        widths[i] += 1;
+      }
+      return widths;
+    }
+
+    function calcSpansForSection(sectionWidth) {
+      return Math.ceil(sectionWidth / MAX_SHELF_SPAN);
+    }
+
+    function inferPartType(name) {
+      const n = (name || '').toLowerCase();
+      if (n.includes('бок')) return 'side';
+      if (n.includes('дно') || n.includes('крыш')) return 'base';
+      if (n.includes('зад') || n.includes('двп')) return 'back';
+      if (n.includes('перегород')) return 'partition';
+      if (n.includes('фасад') || n.includes('двер')) return 'facade';
+      if (n.includes('полк')) return 'shelf';
+      if (n.includes('ящик')) return 'drawer';
+      if (n.includes('штанг')) return 'rod';
+      return 'other';
+    }
+
+    function recalculateCorpus(spec, newWidth, newDepth, newHeight) {
+      const sections = splitSections(newWidth);
+      const corpus = [];
+      const warnings = [];
+      const sectionCount = sections.length;
+      const spansPerSection = sections.map(calcSpansForSection);
+
+      const totalSpans = spansPerSection.reduce((sum, value) => sum + value, 0);
+      const shelfSpanWidth = Math.round(newWidth / totalSpans);
+
+      spec.corpus.forEach((part) => {
+        const type = inferPartType(part.name);
+        const updated = { ...part };
+
+        if (type === 'side') {
+          updated.length_mm = newHeight;
+          updated.width_mm = newDepth;
+          updated.qty = 2;
+        }
+
+        if (type === 'base') {
+          updated.length_mm = newWidth;
+          updated.width_mm = newDepth;
+          updated.qty = part.name.toLowerCase().includes('крыш') ? 1 : 1;
+        }
+
+        if (type === 'back') {
+          updated.length_mm = newHeight;
+          updated.width_mm = newWidth;
+          updated.qty = sectionCount;
+        }
+
+        if (type === 'partition') {
+          updated.length_mm = newHeight;
+          updated.width_mm = newDepth;
+          updated.qty = Math.max(sectionCount - 1, 0);
+        }
+
+        if (type === 'shelf') {
+          updated.length_mm = shelfSpanWidth;
+          updated.width_mm = newDepth;
+          updated.qty = totalSpans;
+          if (shelfSpanWidth > MAX_SHELF_SPAN) {
+            warnings.push(`Пролёт полки ${shelfSpanWidth}мм превышает ${MAX_SHELF_SPAN}мм.`);
+          }
+        }
+
+        if (type === 'facade') {
+          const facadePerSection = sections.map((sectionWidth) => {
+            const perSection = Math.ceil(sectionWidth / MAX_FACADE_WIDTH);
+            return distributeEvenly(sectionWidth, perSection);
+          });
+          const flatWidths = facadePerSection.flat();
+          updated.length_mm = newHeight;
+          updated.widths_mm = flatWidths;
+          updated.qty = flatWidths.length;
+          if (Math.max(...flatWidths) > MAX_FACADE_WIDTH) {
+            warnings.push('Ширина фасада превышает допустимую.');
+          }
+        }
+
+        if (type === 'drawer') {
+          updated.length_mm = Math.min(newWidth, part.length_mm);
+        }
+
+        if (type === 'other') {
+          updated.length_mm = part.length_mm;
+          updated.width_mm = part.width_mm;
+        }
+
+        corpus.push(updated);
+      });
+
+      return { corpus, warnings, sectionCount, spansPerSection };
+    }
+
+    function recalculateFurniture(spec, sectionCount, spansPerSection) {
+      const furniture = [];
+      const warnings = [];
+      let totalFacadeCount = 0;
+      let shelfCount = 0;
+      let drawerCount = 0;
+      let wardrobeSections = 0;
+
+      spec.corpus.forEach((part) => {
+        const type = inferPartType(part.name);
+        if (type === 'facade') totalFacadeCount += part.qty || 0;
+        if (type === 'shelf') shelfCount += part.qty || 0;
+        if (type === 'drawer') drawerCount += part.qty || 0;
+        if (type === 'rod') wardrobeSections += part.qty || 0;
+      });
+
+      const hingeCount = totalFacadeCount * 4;
+      const handleCount = totalFacadeCount + drawerCount;
+      const shelfHolderCount = shelfCount * 4;
+      const tieCount = Math.max(sectionCount - 1, 0) * 6;
+      const ledCount = spansPerSection.reduce((sum, value) => sum + value, 0);
+
+      const add = (name, qty, unit = 'шт', price = 0) => {
+        furniture.push({ name, qty, unit, price });
+      };
+
+      add('Петля', hingeCount);
+      add('Ручка', handleCount);
+      add('Полкодержатель', shelfHolderCount);
+      add('Стяжка', tieCount);
+      if (wardrobeSections > 0) {
+        add('Штанга гардеробная', wardrobeSections);
+      }
+      add('LED подсветка', ledCount);
+
+      return { furniture, warnings };
+    }
+
+    function getMaterialDensity(materialName) {
+      const mat = String(materialName || '').toLowerCase();
+      if (mat.includes('лдсп') || mat.includes('дсп')) return 720;
+      if (mat.includes('мдф')) return 750;
+      if (mat.includes('фанер')) return 650;
+      if (mat.includes('двп') || mat.includes('оргалит')) return 850;
+      if (mat.includes('стекл')) return 2500;
+      return 720;
+    }
+
+    function calculateWeight(parts) {
+      let totalKg = 0;
+      parts.forEach((part) => {
+        if (!part.thickness || !part.length_mm || !part.qty) return;
+        const density = getMaterialDensity(part.material);
+        const widths = part.widths_mm || [part.width_mm];
+        for (let i = 0; i < part.qty; i += 1) {
+          const w = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
+          const volumeM3 = (part.length_mm / 1000) * (w / 1000) * (part.thickness / 1000);
+          totalKg += volumeM3 * density;
+        }
+      });
+      return Math.round(totalKg * 100) / 100;
+    }
+
+    function calculatePrice(parts, materials) {
+      let total = 0;
+      parts.forEach((part) => {
+        if (!part.length_mm || !part.width_mm || !part.qty) return;
+        const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000) * part.qty;
+        const material = materials[part.material_id];
+        if (material) {
+          const wasteFactor = 1 + (material.waste || 0) / 100;
+          total += areaM2 * material.price * wasteFactor;
+        }
+      });
+      return Math.round(total);
+    }
+
+    self.onmessage = (event) => {
+      const { type, payload } = event.data;
+      if (type === 'calculate') {
+        const { spec, newWidth, newDepth, newHeight } = payload;
+        const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight);
+        const furnitureResult = recalculateFurniture(spec, corpusResult.sectionCount, corpusResult.spansPerSection);
+        const updatedSpec = {
+          ...spec,
+          corpus: corpusResult.corpus,
+          furniture: furnitureResult.furniture,
+          dims: { width: newWidth, depth: newDepth, height: newHeight },
+        };
+        const weight = calculateWeight(updatedSpec.corpus);
+        const price = calculatePrice(updatedSpec.corpus, spec.materials || {});
+        self.postMessage({
+          type: 'result',
+          payload: {
+            spec: updatedSpec,
+            warnings: [...corpusResult.warnings, ...furnitureResult.warnings],
+            weight,
+            price,
+          },
+        });
+      }
+    };
+  </script>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
