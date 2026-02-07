@@ -355,6 +355,58 @@ select {
   font-size: 12px;
 }
 
+.calc-breakdown table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 12px;
+}
+
+#calc-breakdown-table th,
+#calc-breakdown-table td {
+  border: 1px solid var(--border);
+  padding: 8px;
+  font-size: 12px;
+}
+
+#calc-breakdown-table tr.selected {
+  background: rgba(0, 168, 107, 0.12);
+}
+
+.calc-coverage-warning {
+  margin-top: 8px;
+  color: #b82121;
+  font-size: 12px;
+}
+
+.calc-debug-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.calc-debug {
+  margin-top: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  padding: 12px;
+  background: #f9fbfc;
+}
+
+.calc-debug-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.calc-debug-list {
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
 .material-spec {
   margin-top: 16px;
   border-radius: 12px;
