@@ -288,12 +288,15 @@ select {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 16px;
 }
 
 .template-controls,
 .sheet-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
 }
