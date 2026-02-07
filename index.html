@@ -172,12 +172,52 @@
 
           <div class="panel">
             <h3>5. Базовая стоимость</h3>
+            <p class="hint">Найдено автоматически:</p>
+            <ul id="calc-summary-list" class="summary-list"></ul>
+            <div id="calc-summary-warning" class="warnings"></div>
             <div class="row">
               <label>Ячейка с прямыми затратами</label>
               <input type="text" id="base-cost-cell" placeholder="B120" data-cell-input>
             </div>
             <p class="hint">Можно выбрать ячейку с итоговой суммой «Прямые затраты».</p>
             <button class="secondary auto-btn" data-auto="cost">Автоопределить</button>
+            <details class="calc-overrides">
+              <summary>Ручное переопределение итогов (если не найдено)</summary>
+              <div class="row">
+                <label>Вес (кг)</label>
+                <input type="text" id="anchor-weight" placeholder="Лист!A1" data-cell-input>
+                <label>Трудоемкость</label>
+                <input type="text" id="anchor-labor-hours" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Стоимость ДСП</label>
+                <input type="text" id="anchor-dsp" placeholder="Лист!A1" data-cell-input>
+                <label>Стоимость Кромки</label>
+                <input type="text" id="anchor-edge" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Стоимость пластика</label>
+                <input type="text" id="anchor-plastic" placeholder="Лист!A1" data-cell-input>
+                <label>Стоимость ткани</label>
+                <input type="text" id="anchor-fabric" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Фурнитура имп.</label>
+                <input type="text" id="anchor-hw-imp" placeholder="Лист!A1" data-cell-input>
+                <label>Фурнитура отч.</label>
+                <input type="text" id="anchor-hw-rep" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Стоимость упаковки</label>
+                <input type="text" id="anchor-pack" placeholder="Лист!A1" data-cell-input>
+                <label>Труд рабочих</label>
+                <input type="text" id="anchor-labor" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Прямые затраты</label>
+                <input type="text" id="anchor-total" placeholder="Лист!A1" data-cell-input>
+              </div>
+            </details>
           </div>
         </div>
       </div>
@@ -278,9 +318,20 @@
         <div class="tabs">
           <button class="tab active" data-tab="corpus">Корпус</button>
           <button class="tab" data-tab="furniture">Фурнитура</button>
+          <button class="tab" data-tab="calc">Разбор калькуляции</button>
         </div>
 
         <table id="results-table"></table>
+
+        <div id="calc-breakdown" class="calc-breakdown hidden">
+          <div class="params">
+            <div>Листовых ячеек: <strong id="calc-leaf-count">—</strong></div>
+            <div>Покрытие: <strong id="calc-coverage">—</strong></div>
+            <div>Сумма leaf: <strong id="calc-leaf-sum">—</strong></div>
+            <div>Итого по калькуляции: <strong id="calc-total">—</strong></div>
+          </div>
+          <table id="calc-breakdown-table"></table>
+        </div>
 
         <button id="export-btn" class="primary">Экспорт в Excel</button>
 
@@ -743,6 +794,32 @@
       }, 0);
     }
 
+    function calculatePartArea(part) {
+      if (!part.length_mm || !part.qty) return 0;
+      const widths = part.widths_mm || [part.width_mm];
+      let areaM2 = 0;
+      for (let i = 0; i < part.qty; i += 1) {
+        const w = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
+        areaM2 += (part.length_mm / 1000) * (w / 1000);
+      }
+      return areaM2;
+    }
+
+    function calculateDspCostFromRates(parts, rateInfo) {
+      if (!rateInfo || !rateInfo.avgRate) return null;
+      let total = 0;
+      parts.forEach((part) => {
+        const areaM2 = calculatePartArea(part);
+        if (!areaM2) return;
+        const thicknessKey = part.thickness ? String(part.thickness) : null;
+        const rate = thicknessKey && rateInfo.byThickness?.[thicknessKey]
+          ? rateInfo.byThickness[thicknessKey]
+          : rateInfo.avgRate;
+        total += areaM2 * rate;
+      });
+      return total;
+    }
+
     function sumPartsQty(parts) {
       return parts.reduce((sum, part) => sum + (Number(part.qty || 0) || 0), 0);
     }
@@ -765,28 +842,50 @@
         };
         const weight = calculateWeight(updatedSpec.corpus);
         const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
-        const baseHardwareCost = calculateFurnitureCost(spec.furniture || []);
-        const newMaterialsCost = calculatePrice(updatedSpec.corpus, spec.materials || {});
-        const newHardwareCost = calculateFurnitureCost(updatedSpec.furniture || []);
-        const baseOther = spec.baseCost
-          ? Math.max(0, spec.baseCost - (baseMaterialsCost + baseHardwareCost))
-          : 0;
+        const baseHardwareCostFallback = calculateFurnitureCost(spec.furniture || []);
+        const calcSummary = spec.calcSummary || {};
+        const baseValues = calcSummary.baseValues || {};
+        const baseDspCost = Number.isFinite(baseValues.dsp) ? baseValues.dsp : baseMaterialsCost;
+        const baseEdgeCost = Number.isFinite(baseValues.edge) ? baseValues.edge : 0;
+        const basePlasticCost = Number.isFinite(baseValues.plastic) ? baseValues.plastic : 0;
+        const baseFabricCost = Number.isFinite(baseValues.fabric) ? baseValues.fabric : 0;
+        const basePackCost = Number.isFinite(baseValues.pack) ? baseValues.pack : 0;
+        const baseLaborCost = Number.isFinite(baseValues.labor) ? baseValues.labor : 0;
+        const baseHardwareCost = Number.isFinite(baseValues.hwImp) || Number.isFinite(baseValues.hwRep)
+          ? (Number(baseValues.hwImp || 0) + Number(baseValues.hwRep || 0))
+          : baseHardwareCostFallback;
+        const baseTotalCost = Number.isFinite(baseValues.totalCost)
+          ? baseValues.totalCost
+          : (spec.baseCost ?? (baseDspCost + baseEdgeCost + basePlasticCost + baseFabricCost + baseHardwareCost));
+
+        const newMaterialsFallback = calculatePrice(updatedSpec.corpus, spec.materials || {});
+        const rateInfo = calcSummary.rates?.dsp;
+        const canUseRates = Boolean(calcSummary.breakdown?.dsp?.usable && rateInfo?.avgRate);
+        const newDspCost = canUseRates ? calculateDspCostFromRates(updatedSpec.corpus, rateInfo) : newMaterialsFallback;
+        const baseDspForRatio = baseDspCost > 0 ? baseDspCost : baseMaterialsCost;
+        const areaRatio = baseDspForRatio > 0 ? newDspCost / baseDspForRatio : 1;
+
         const baseParts = sumPartsQty(spec.corpus || []);
         const newParts = sumPartsQty(updatedSpec.corpus || []);
         const baseSections = inferSectionCount(spec);
         const newSections = corpusResult.sectionCount || baseSections || 1;
-        const areaRatio = baseMaterialsCost > 0 ? newMaterialsCost / baseMaterialsCost : 1;
         const partsRatio = baseParts > 0 ? newParts / baseParts : 1;
         const sectionsRatio = baseSections > 0 ? newSections / baseSections : 1;
-        const ratioMap = {
-          area: areaRatio,
-          parts: partsRatio,
-          sections: sectionsRatio,
-          fixed: 1,
-        };
-        const driver = ratioMap[otherDriver] ? otherDriver : 'area';
-        const otherCostNew = baseOther * ratioMap[driver];
-        const price = round2(newMaterialsCost + newHardwareCost + otherCostNew);
+
+        const edgeRatio = areaRatio || partsRatio;
+        const newEdgeCost = baseEdgeCost * edgeRatio;
+        const newPlasticCost = basePlasticCost * areaRatio;
+        const newFabricCost = baseFabricCost * areaRatio;
+        const newHardwareCost = baseHardwareCost * sectionsRatio;
+        const newPackCost = basePackCost * partsRatio;
+        const newLaborCost = baseLaborCost * sectionsRatio;
+
+        const recognizedBase = baseDspCost + baseEdgeCost + basePlasticCost + baseFabricCost
+          + baseHardwareCost + basePackCost + baseLaborCost;
+        const otherDelta = baseTotalCost - recognizedBase;
+
+        const price = round2(newDspCost + newEdgeCost + newPlasticCost + newFabricCost
+          + newHardwareCost + newPackCost + newLaborCost + otherDelta);
         const extraWarnings = [];
         if (newHeight > 2500) {
           extraWarnings.push('⚠️ Устойчивость: добавить антиопрокидывание');
@@ -799,9 +898,9 @@
             weight,
             price,
             breakdown: {
-              materials: round2(newMaterialsCost),
+              materials: round2(newDspCost + newEdgeCost + newPlasticCost + newFabricCost),
               hardware: round2(newHardwareCost),
-              other: round2(otherCostNew),
+              other: round2(price - (newDspCost + newEdgeCost + newPlasticCost + newFabricCost + newHardwareCost)),
               total: price,
             },
             structure: {
@@ -815,7 +914,7 @@
     };
   </script>
 
-  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="vendor/xlsx.full.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
