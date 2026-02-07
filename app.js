@@ -243,6 +243,10 @@ function parseNumericValue(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function round2(value) {
+  return Math.round(value * 100) / 100;
+}
+
 function normalizeLabelText(value) {
   return String(value || '')
     .toLowerCase()
@@ -283,6 +287,13 @@ function isNumericCell(cell) {
   if (!cell) return false;
   if (typeof cell.v === 'number') return true;
   return Number.isFinite(parseNumericValue(cell.v));
+}
+
+function isBlankCell(cell) {
+  if (!cell) return true;
+  if (cell.v === undefined || cell.v === null) return true;
+  if (typeof cell.v === 'string' && !cell.v.trim()) return true;
+  return false;
 }
 
 function findCalcSummaryAnchors(workbook) {
@@ -330,6 +341,26 @@ function findCalcSummaryAnchors(workbook) {
           if (isNumericCell(candidate)) {
             foundValueCell = candidateRef;
             break;
+          }
+        }
+      }
+      if (!foundValueCell && anchorKey === 'laborHoursRef') {
+        for (let offset = 1; offset <= 5; offset += 1) {
+          const candidateRef = XLSX.utils.encode_cell({ r: decoded.r, c: decoded.c + offset });
+          const candidate = sheet[candidateRef];
+          if (isBlankCell(candidate)) {
+            foundValueCell = candidateRef;
+            break;
+          }
+        }
+        if (!foundValueCell) {
+          for (let offset = 1; offset <= 3; offset += 1) {
+            const candidateRef = XLSX.utils.encode_cell({ r: decoded.r + offset, c: decoded.c });
+            const candidate = sheet[candidateRef];
+            if (isBlankCell(candidate)) {
+              foundValueCell = candidateRef;
+              break;
+            }
           }
         }
       }
