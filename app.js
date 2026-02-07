@@ -5,6 +5,7 @@ const state = {
   newSpec: null,
   worker: null,
   activeSheet: null,
+  previewHoverBound: false,
 };
 
 const COLUMN_LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
@@ -58,8 +59,9 @@ function renderPreview(sheet) {
   const table = document.getElementById('preview-table');
   table.innerHTML = '';
   const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
-  const rows = json.slice(0, 12);
-  const maxCols = Math.max(...rows.map((row) => row.length), 10);
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+  const rowCount = range.e.r + 1;
+  const maxCols = range.e.c + 1;
 
   const headerRow = document.createElement('tr');
   headerRow.appendChild(document.createElement('th'));
@@ -70,7 +72,8 @@ function renderPreview(sheet) {
   }
   table.appendChild(headerRow);
 
-  rows.forEach((row, rowIndex) => {
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    const row = json[rowIndex] || [];
     const tr = document.createElement('tr');
     const rowHeader = document.createElement('th');
     rowHeader.textContent = rowIndex + 1;
@@ -79,10 +82,13 @@ function renderPreview(sheet) {
       const td = document.createElement('td');
       td.textContent = row[col] ?? '';
       td.dataset.col = col;
+      td.dataset.row = rowIndex;
       tr.appendChild(td);
     }
     table.appendChild(tr);
-  });
+  }
+
+  attachPreviewHover();
 }
 
 function highlightColumn(colIndex) {
@@ -94,6 +100,52 @@ function highlightColumn(colIndex) {
   table.querySelectorAll(`td:nth-child(${colIndex + 2}), th:nth-child(${colIndex + 2})`).forEach((cell) => {
     cell.classList.add('highlighted');
   });
+}
+
+function attachPreviewHover() {
+  if (state.previewHoverBound) return;
+  const table = document.getElementById('preview-table');
+  const indicator = document.getElementById('cursor-indicator');
+
+  const clearHover = () => {
+    table.querySelectorAll('.row-hover, .col-hover, .cell-hover').forEach((cell) => {
+      cell.classList.remove('row-hover', 'col-hover', 'cell-hover');
+    });
+  };
+
+  table.addEventListener('mouseover', (event) => {
+    const cell = event.target.closest('td');
+    if (!cell || !table.contains(cell)) return;
+    const rowIndex = Number(cell.dataset.row);
+    const colIndex = Number(cell.dataset.col);
+    if (Number.isNaN(rowIndex) || Number.isNaN(colIndex)) return;
+    clearHover();
+
+    cell.classList.add('cell-hover');
+
+    const row = table.querySelectorAll('tr')[rowIndex + 1];
+    if (row) {
+      row.querySelectorAll('td, th').forEach((item) => item.classList.add('row-hover'));
+    }
+
+    table.querySelectorAll(`tr > :nth-child(${colIndex + 2})`).forEach((item) => {
+      item.classList.add('col-hover');
+    });
+
+    if (indicator) {
+      const cellRef = `${colIndexToLetter(colIndex)}${rowIndex + 1}`;
+      indicator.textContent = `${cellRef}: ${cell.textContent || '—'}`;
+    }
+  });
+
+  table.addEventListener('mouseleave', () => {
+    clearHover();
+    if (indicator) {
+      indicator.textContent = 'Наведите курсор на ячейку';
+    }
+  });
+
+  state.previewHoverBound = true;
 }
 
 function readCell(sheet, cellRef) {
