@@ -328,10 +328,19 @@
           <div class="params">
             <div>Листовых ячеек: <strong id="calc-leaf-count">—</strong></div>
             <div>Покрытие: <strong id="calc-coverage">—</strong></div>
-            <div>Сумма leaf: <strong id="calc-leaf-sum">—</strong></div>
+            <div>Сумма breakdown: <strong id="calc-leaf-sum">—</strong></div>
             <div>Итого по калькуляции: <strong id="calc-total">—</strong></div>
           </div>
+          <div id="calc-coverage-warning" class="calc-coverage-warning"></div>
           <table id="calc-breakdown-table"></table>
+          <div class="calc-debug-toolbar">
+            <button id="calc-debug-toggle" class="secondary">Показать источники</button>
+            <div class="muted">Кликните по строке, чтобы увидеть источники.</div>
+          </div>
+          <div id="calc-debug-panel" class="calc-debug hidden">
+            <div id="calc-debug-title" class="calc-debug-title">Источники</div>
+            <ul id="calc-debug-list" class="calc-debug-list"></ul>
+          </div>
         </div>
 
         <button id="export-btn" class="primary">Экспорт в Excel</button>
