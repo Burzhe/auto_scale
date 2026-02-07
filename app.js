@@ -342,6 +342,31 @@ function autoDetectMapping(sheet) {
   return mapping;
 }
 
+function autoDetectFurnitureMapping(sheet) {
+  const mapping = {};
+  if (!sheet) return mapping;
+  const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+
+  for (let row = 0; row < 50; row += 1) {
+    const rowData = json[row];
+    const rowText = rowData?.map((cell) => String(cell || '').toLowerCase()).join(' ') || '';
+    if (rowText.includes('код') && rowText.includes('наимен') && rowText.includes('кол')) {
+      mapping.furnitureHeaderRow = row + 1;
+      rowData.forEach((cell, idx) => {
+        const cellLow = String(cell || '').toLowerCase();
+        if (cellLow.includes('код')) mapping.furnitureCodeCol = idx;
+        if (cellLow.includes('наимен')) mapping.furnitureNameCol = idx;
+        if (cellLow.includes('кол')) mapping.furnitureQtyCol = idx;
+        if (cellLow.includes('ед')) mapping.furnitureUnitCol = idx;
+        if (cellLow.includes('цен')) mapping.furniturePriceCol = idx;
+      });
+      break;
+    }
+  }
+
+  return mapping;
+}
+
 function applyMappingToUI(mapping) {
   if (!mapping) return;
   if (mapping.materialDictStart) document.getElementById('mat-start').value = mapping.materialDictStart;
@@ -362,6 +387,13 @@ function applyMappingToUI(mapping) {
   if (Number.isInteger(mapping.detailsLengthCol)) document.getElementById('details-length-col').value = colIndexToLetter(mapping.detailsLengthCol);
   if (Number.isInteger(mapping.detailsWidthCol)) document.getElementById('details-width-col').value = colIndexToLetter(mapping.detailsWidthCol);
   if (Number.isInteger(mapping.detailsQtyCol)) document.getElementById('details-qty-col').value = colIndexToLetter(mapping.detailsQtyCol);
+  if (mapping.furnitureSheet !== undefined) document.getElementById('furniture-sheet').value = mapping.furnitureSheet;
+  if (mapping.furnitureHeaderRow) document.getElementById('furniture-header').value = mapping.furnitureHeaderRow;
+  if (Number.isInteger(mapping.furnitureCodeCol)) document.getElementById('furniture-code-col').value = colIndexToLetter(mapping.furnitureCodeCol);
+  if (Number.isInteger(mapping.furnitureQtyCol)) document.getElementById('furniture-qty-col').value = colIndexToLetter(mapping.furnitureQtyCol);
+  if (Number.isInteger(mapping.furnitureNameCol)) document.getElementById('furniture-name-col').value = colIndexToLetter(mapping.furnitureNameCol);
+  if (Number.isInteger(mapping.furnitureUnitCol)) document.getElementById('furniture-unit-col').value = colIndexToLetter(mapping.furnitureUnitCol);
+  if (Number.isInteger(mapping.furniturePriceCol)) document.getElementById('furniture-price-col').value = colIndexToLetter(mapping.furniturePriceCol);
 }
 
 function saveTemplate(name, mapping) {
@@ -544,23 +576,69 @@ function exportToExcel(spec) {
 }
 
 function updateMappingFromAuto(type) {
+  if (!state.workbook || !state.activeSheet) {
+    alert('Сначала загрузите Excel-файл.');
+    return;
+  }
   const sheet = state.workbook.Sheets[state.activeSheet];
   const mapping = autoDetectMapping(sheet);
   if (!mapping || Object.keys(mapping).length === 0) {
-    alert('Не удалось найти структуру. Проверьте выбранный лист и попробуйте снова.');
-    return;
+    if (type !== 'furniture') {
+      alert('Не удалось найти структуру. Проверьте выбранный лист и попробуйте снова.');
+      return;
+    }
   }
   if (type === 'materials') {
-    applyMappingToUI(mapping);
+    applyMappingToUI({
+      materialDictStart: mapping.materialDictStart,
+      materialDictEnd: mapping.materialDictEnd,
+      materialNameCol: mapping.materialNameCol,
+      materialPriceCol: mapping.materialPriceCol,
+      materialWasteCol: mapping.materialWasteCol,
+      materialIdCol: mapping.materialIdCol,
+    });
   }
   if (type === 'dimensions') {
-    applyMappingToUI(mapping);
+    applyMappingToUI({
+      dimensionsCell: mapping.dimensionsCell,
+      widthCell: mapping.widthCell,
+      depthCell: mapping.depthCell,
+      heightCell: mapping.heightCell,
+    });
   }
   if (type === 'details') {
-    applyMappingToUI(mapping);
+    applyMappingToUI({
+      detailsHeaderRow: mapping.detailsHeaderRow,
+      detailsStartRow: mapping.detailsStartRow,
+      detailsEndRow: mapping.detailsEndRow,
+      detailsNameCol: mapping.detailsNameCol,
+      detailsThicknessCol: mapping.detailsThicknessCol,
+      detailsLengthCol: mapping.detailsLengthCol,
+      detailsWidthCol: mapping.detailsWidthCol,
+      detailsQtyCol: mapping.detailsQtyCol,
+    });
   }
   if (type === 'furniture') {
-    applyMappingToUI(mapping);
+    const selectedSheet = document.getElementById('furniture-sheet').value || state.activeSheet;
+    const furnitureSheet = state.workbook.Sheets[selectedSheet];
+    const furnitureMapping = autoDetectFurnitureMapping(furnitureSheet);
+    if (!furnitureMapping || Object.keys(furnitureMapping).length === 0) {
+      alert('Не удалось найти блок фурнитуры. Проверьте лист и попробуйте снова.');
+      return;
+    }
+    applyMappingToUI({
+      furnitureSheet: selectedSheet,
+      furnitureHeaderRow: furnitureMapping.furnitureHeaderRow,
+      furnitureCodeCol: furnitureMapping.furnitureCodeCol,
+      furnitureQtyCol: furnitureMapping.furnitureQtyCol,
+      furnitureNameCol: furnitureMapping.furnitureNameCol,
+      furnitureUnitCol: furnitureMapping.furnitureUnitCol,
+      furniturePriceCol: furnitureMapping.furniturePriceCol,
+    });
+  }
+  const indicator = document.getElementById('cursor-indicator');
+  if (indicator) {
+    indicator.textContent = 'Автоопределение применено к текущему блоку.';
   }
 }
 
@@ -698,6 +776,49 @@ function attachEventHandlers() {
     const name = prompt('Название шаблона');
     if (!name) return;
     saveTemplate(name, collectMapping());
+  });
+
+  document.getElementById('export-template-btn').addEventListener('click', () => {
+    const mapping = collectMapping();
+    const payload = {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      mapping,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = 'wardrobe-mapping.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+  });
+
+  document.getElementById('import-template-btn').addEventListener('click', () => {
+    document.getElementById('import-template-input').click();
+  });
+
+  document.getElementById('import-template-input').addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        const mapping = data.mapping || data;
+        applyMappingToUI(mapping);
+        const name = data.name || null;
+        if (name) {
+          saveTemplate(name, mapping);
+        }
+      } catch (error) {
+        alert('Не удалось прочитать файл шаблона. Проверьте формат JSON.');
+      } finally {
+        event.target.value = '';
+      }
+    };
+    reader.readAsText(file);
   });
 
   document.getElementById('template-select').addEventListener('change', (event) => {

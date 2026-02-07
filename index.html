@@ -46,6 +46,9 @@
             <option value="">Выбрать шаблон...</option>
           </select>
           <button id="save-template-btn" class="secondary">Сохранить шаблон</button>
+          <button id="export-template-btn" class="secondary">Экспорт шаблона</button>
+          <button id="import-template-btn" class="secondary">Импорт шаблона</button>
+          <input type="file" id="import-template-input" accept="application/json" class="hidden">
         </div>
         <div class="sheet-controls">
           <label>Лист:</label>
@@ -309,6 +312,16 @@
       const totalSpans = overrideShelves > 0 ? overrideShelves : autoSpans;
       const shelfSpanWidth = Math.round(newWidth / totalSpans);
 
+      let facadeTemplate = null;
+      let facadeTemplateName = '';
+
+      const buildFacadeName = (templateName, index) => {
+        const raw = String(templateName || 'Фасад').trim();
+        const match = raw.match(/^(.*?)(\d+)?\s*$/);
+        const base = match?.[1]?.trim() || 'Фасад';
+        return `${base} ${index + 1}`.trim();
+      };
+
       spec.corpus.forEach((part) => {
         const type = inferPartType(part.name);
         const updated = { ...part };
@@ -347,17 +360,11 @@
         }
 
         if (type === 'facade') {
-          const facadePerSection = sections.map((sectionWidth) => {
-            const perSection = Math.ceil(sectionWidth / MAX_FACADE_WIDTH);
-            return distributeEvenly(sectionWidth, perSection);
-          });
-          const flatWidths = facadePerSection.flat();
-          updated.length_mm = newHeight;
-          updated.widths_mm = flatWidths;
-          updated.qty = flatWidths.length;
-          if (Math.max(...flatWidths) > MAX_FACADE_WIDTH) {
-            warnings.push('Ширина фасада превышает допустимую.');
+          if (!facadeTemplate) {
+            facadeTemplate = { ...part };
+            facadeTemplateName = String(part.name || 'Фасад');
           }
+          return;
         }
 
         if (type === 'drawer') {
@@ -371,6 +378,31 @@
 
         corpus.push(updated);
       });
+
+      if (facadeTemplate) {
+        const facadePerSection = sections.map((sectionWidth) => {
+          const perSection = Math.ceil(sectionWidth / MAX_FACADE_WIDTH);
+          return distributeEvenly(sectionWidth, perSection);
+        });
+        const flatWidths = facadePerSection.flat();
+        flatWidths.forEach((width, index) => {
+          const facadePart = {
+            ...facadeTemplate,
+            name: buildFacadeName(facadeTemplateName, index),
+            length_mm: newHeight,
+            width_mm: width,
+            qty: 1,
+          };
+          delete facadePart.widths_mm;
+          corpus.push(facadePart);
+        });
+        if (Math.max(...flatWidths) > MAX_FACADE_WIDTH) {
+          warnings.push('Ширина фасада превышает допустимую.');
+        }
+        if (spec.corpus.filter((part) => inferPartType(part.name) === 'facade').length > 1) {
+          warnings.push('Обнаружено несколько фасадов: пересоздано по шаблону первого.');
+        }
+      }
 
       if (newWidth >= PARTITION_THRESHOLD && sectionCount < 2) {
         warnings.push('При ширине от 800 мм нужна минимум одна вертикальная перегородка.');
