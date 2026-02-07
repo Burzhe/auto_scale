@@ -1,0 +1,891 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SpecAssist Offline</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>SpecAssist Offline</h1>
+      <p class="subtitle">Импорт Excel → поиск и сравнение</p>
+    </div>
+    <div class="header-actions">
+      <button id="theme-toggle" class="ghost">🌙 Тёмная тема</button>
+      <button id="reset-btn" class="danger">Сбросить проект</button>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <section id="upload-screen" class="screen active">
+      <div class="card">
+        <h2>1. Загрузите Excel</h2>
+        <div id="drop-zone" class="drop-zone">
+          <div>
+            <strong>Перетащите .xlsx файл сюда</strong>
+            <p>или выберите файл через кнопку ниже.</p>
+          </div>
+          <input type="file" id="file-input" accept=".xlsx" />
+        </div>
+        <div id="file-meta" class="file-meta hidden"></div>
+
+        <div id="sheet-options" class="sheet-options hidden">
+          <div class="sheet-controls">
+            <button id="select-all-btn">Выбрать все</button>
+            <button id="select-none-btn">Снять выбор</button>
+          </div>
+          <div id="sheet-list" class="sheet-list"></div>
+          <button id="mapping-btn" class="ghost">⚙️ Настроить колонки</button>
+          <button id="import-btn" class="primary" disabled>Импортировать и индексировать</button>
+        </div>
+
+        <div id="sheet-preview" class="sheet-preview hidden">
+          <h3>Превью листов</h3>
+          <div id="sheet-preview-tabs" class="sheet-preview-tabs"></div>
+          <div id="sheet-preview-content" class="sheet-preview-content"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Прогресс импорта</h2>
+        <div id="progress-container" class="progress-container hidden">
+          <div id="progress-message" class="progress-message"></div>
+          <div class="progress-row">
+            <span>Общий прогресс</span>
+            <progress id="overall-progress" value="0" max="100"></progress>
+            <span id="overall-progress-label">0%</span>
+          </div>
+          <div id="sheet-progress"></div>
+          <div class="progress-stats" id="progress-stats"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="search-screen" class="screen">
+      <div class="card">
+        <h2>2. Поиск</h2>
+        <div class="search-bar">
+          <input id="search-input" type="text" placeholder="Поиск по названию или описанию..." />
+          <button id="search-btn" class="primary">Найти</button>
+        </div>
+        <div class="filter-summary">
+          <span id="active-filters" class="active-filters">Фильтры не применены</span>
+          <button id="reset-filters-btn" class="ghost hidden">Сбросить фильтры</button>
+        </div>
+        <div class="filters">
+          <div class="filter-group">
+            <label>Категория <span id="category-count" class="pill-count"></span></label>
+            <select id="category-filter">
+              <option value="">Любая</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label>Флаги</label>
+            <div class="flag-grid" id="flag-filters"></div>
+          </div>
+          <div class="filter-group">
+            <label>Размеры (мм)</label>
+            <div class="dim-grid">
+              <div>
+                <span>W</span>
+                <div class="range-inputs">
+                  <input type="range" id="w-min-range" min="0" max="6000" step="10" value="0" />
+                  <input type="range" id="w-max-range" min="0" max="6000" step="10" value="6000" />
+                </div>
+                <div class="range-values">
+                  <input type="number" id="w-min" placeholder="мин" />
+                  <input type="number" id="w-max" placeholder="макс" />
+                  <input type="number" id="w-tol" placeholder="±" />
+                </div>
+              </div>
+              <div>
+                <span>D</span>
+                <div class="range-inputs">
+                  <input type="range" id="d-min-range" min="0" max="6000" step="10" value="0" />
+                  <input type="range" id="d-max-range" min="0" max="6000" step="10" value="6000" />
+                </div>
+                <div class="range-values">
+                  <input type="number" id="d-min" placeholder="мин" />
+                  <input type="number" id="d-max" placeholder="макс" />
+                  <input type="number" id="d-tol" placeholder="±" />
+                </div>
+              </div>
+              <div>
+                <span>H</span>
+                <div class="range-inputs">
+                  <input type="range" id="h-min-range" min="0" max="6000" step="10" value="0" />
+                  <input type="range" id="h-max-range" min="0" max="6000" step="10" value="6000" />
+                </div>
+                <div class="range-values">
+                  <input type="number" id="h-min" placeholder="мин" />
+                  <input type="number" id="h-max" placeholder="макс" />
+                  <input type="number" id="h-tol" placeholder="±" />
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="filter-group">
+            <label>Цена за единицу (без НДС)</label>
+            <div class="price-grid">
+              <input type="number" id="price-min" placeholder="мин" />
+              <input type="number" id="price-max" placeholder="макс" />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card results-card">
+        <div class="results-header">
+          <h2>Результаты</h2>
+          <div class="results-actions">
+            <div class="view-toggle">
+              <button id="view-table-btn" class="ghost active">Таблица</button>
+              <button id="view-cards-btn" class="ghost">Карточки</button>
+            </div>
+            <button id="export-btn" class="ghost">Экспорт в Excel</button>
+          </div>
+        </div>
+        <div id="results-summary" class="results-summary"></div>
+        <div id="results-empty" class="empty-state hidden">
+          <div class="empty-illustration">🪄</div>
+          <h3>Ничего не найдено</h3>
+          <p data-empty-hint>Попробуйте увеличить толерантность размеров или снять фильтр по LED.</p>
+          <div class="empty-actions">
+            <button id="increase-tol-btn" class="ghost">Увеличить ±50мм</button>
+            <button id="remove-led-btn" class="ghost">Убрать фильтр LED</button>
+          </div>
+        </div>
+        <div id="results-loading" class="results-loading hidden">
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+        </div>
+        <div id="scroll-skeleton" class="scroll-skeleton hidden">
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+        </div>
+        <div class="table-wrap" id="table-wrap">
+          <table id="results-table">
+            <thead>
+              <tr>
+                <th></th>
+                <th data-sort="name">Наименование</th>
+                <th data-sort="description">Описание</th>
+                <th data-sort="category">Категория</th>
+                <th data-sort="dims">Размеры (мм)</th>
+                <th data-sort="price_unit_ex_vat">Цена/ед</th>
+                <th data-sort="price_per_lm">Цена/п.м.</th>
+                <th data-sort="price_per_m2">Цена/м²</th>
+                <th>Флаги</th>
+                <th data-sort="source_sheet">Лист</th>
+                <th data-sort="source_row">Строка</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div id="cards-view" class="cards-view hidden"></div>
+      </div>
+
+      <aside id="details-drawer" class="details-drawer">
+        <button id="close-drawer" class="close">×</button>
+        <div id="details-content"></div>
+      </aside>
+    </section>
+  </main>
+
+  <button id="compare-btn" class="compare-btn hidden">Сравнить (0)</button>
+
+  <div id="compare-modal" class="modal hidden">
+    <div class="modal-content">
+      <button id="close-compare" class="close">×</button>
+      <h3>Сравнение позиций</h3>
+      <div id="compare-table" class="compare-table"></div>
+      <div id="compare-summary" class="compare-summary"></div>
+    </div>
+  </div>
+
+  <div id="column-mapping-modal" class="modal hidden">
+    <div class="modal-content mapping-modal">
+      <button id="close-column-mapping" class="close">×</button>
+      <h3>Настройка колонок</h3>
+      <p>Лист: <strong id="mapping-sheet-name"></strong></p>
+      <div class="mapping-toolbar">
+        <button id="mapping-auto-btn" class="ghost">🤖 Авто-определить</button>
+        <label><input type="checkbox" id="mapping-apply-all" /> Применить ко всем листам</label>
+        <label>
+          Шаблон:
+          <select id="mapping-template-select"></select>
+        </label>
+        <button id="mapping-template-save" class="ghost">💾 Сохранить шаблон</button>
+      </div>
+      <div class="mapping-grid">
+        <div>
+          <label for="mapping-name">Наименование</label>
+          <select id="mapping-name" data-mapping="name_col"></select>
+        </div>
+        <div>
+          <label for="mapping-dims">Размеры (Ш×Г×В)</label>
+          <select id="mapping-dims" data-mapping="dims_col"></select>
+        </div>
+        <div>
+          <label for="mapping-desc">Описание / Материал</label>
+          <select id="mapping-desc" data-mapping="desc_col"></select>
+        </div>
+        <div>
+          <label for="mapping-qty">Количество</label>
+          <select id="mapping-qty" data-mapping="qty_col"></select>
+        </div>
+        <div>
+          <label for="mapping-price">Цена за ед.</label>
+          <select id="mapping-price" data-mapping="price_unit_col"></select>
+        </div>
+        <div>
+          <label for="mapping-total">Итого</label>
+          <select id="mapping-total" data-mapping="total_col"></select>
+        </div>
+      </div>
+      <div id="mapping-preview"></div>
+      <div class="mapping-footer">
+        <button id="mapping-save-btn" class="primary">Сохранить настройку</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="vendor/flexsearch.bundle.min.js"></script>
+  <script id="worker-src" type="text/plain">
+    self.importScripts('vendor/xlsx.full.min.js');
+
+    const CATEGORY_STEMS = {
+      "Шкафы": ["шкаф", "пенал", "гардероб", "купе", "встроен"],
+      "Стеллажи": ["стеллаж", "стелл", "этажерк"],
+      "Кухни": ["кухн", "столешниц", "фартук"],
+      "Столы": ["стол", "столик", "парт"],
+      "Кресла и стулья": ["кресл", "стул", "табурет", "пуф"],
+      "Бары и стойки": ["бар", "стойк", "ресепшн"],
+      "Двери": ["двер", "дверн", "полотн"],
+      "Перегородки": ["перегород", "перил", "поручн"],
+      "Зеркала": ["зеркал"],
+      "Освещение": ["светильн", "люстр", "бра", "торшер", "подсветк"],
+      "Мягкая мебель": ["диван", "кровать", "матрас"],
+      "Офисная мебель": ["офисн", "рабоч.*мест", "кабинет"],
+      "Детская мебель": ["детск", "подростк"],
+      "Фурнитура": ["ручк", "петл", "направляющ", "фурнитур"],
+      "Прочее": [],
+    };
+
+    const FLAG_TOKENS = {
+      mat_ldsp: ["лдсп", "egger", "эггер", "ламинирован"],
+      mat_mdf: ["мдф", "mdf", "крашен"],
+      mat_veneer: ["шпон", "veneer", "натуральн.*дерев", "массив"],
+      has_glass: ["стекл", "зеркал", "витраж"],
+      has_metal: ["металл", "сталь", "нерж", "нержавею", "алюм", "порошк", "хром"],
+      has_led: ["подсвет", "led", "лента", "светодиод"],
+      has_stone: ["камень", "кварц", "мрамор", "гранит"],
+      has_acrylic: ["акрил", "пмма", "оргстекл"],
+    };
+
+    const NAME_KEYWORDS = [
+      "шкаф",
+      "пенал",
+      "гардероб",
+      "встро",
+      "стол",
+      "бенч",
+      "бар",
+      "перил",
+      "зеркал",
+      "перегород",
+      "двер",
+      "панел",
+    ];
+
+    const MATERIAL_KEYWORDS = [
+      "лдсп",
+      "egger",
+      "ламинирован",
+      "мдф",
+      "mdf",
+      "шпон",
+      "veneer",
+      "стекл",
+      "зеркал",
+      "металл",
+      "нерж",
+      "сталь",
+      "алюм",
+      "порошк",
+    ];
+
+    const HEADER_SCAN_ROWS = 100;
+    let idCounter = 1;
+
+    function normalizeHeaderText(value) {
+      if (value === null || value === undefined) return "";
+      let text = String(value).trim().toLowerCase().replace(/ё/g, "е");
+      text = text.replace(/[^\w\s]/g, " ");
+      text = text.replace(/\s+/g, " ").trim();
+      return text;
+    }
+
+    function matchHeaderToField(normalized) {
+      if (!normalized || normalized === "nan") return null;
+      if (normalized.includes("артикул")) return null;
+      const hasPrice = /(цена|стоим|руб)/.test(normalized);
+      if (/(итого|сумма|всего)/.test(normalized)) return "total";
+      if (/(наимен|товар|номенклат|издел|позици|item|product)/.test(normalized)) return "name";
+      if (/(размер|габарит|шхгхв|шир|выс|глуб|длин)/.test(normalized)) return "dims";
+      if (/(материал|описан|коммент|примечан)/.test(normalized)) return "desc";
+      if (/(колич|кол-?во|кол\b|qty|шт)/.test(normalized)) return "qty";
+      if (normalized.includes("комментар")) return "comment";
+      if (normalized.includes("ед") && (normalized.includes("изм") || normalized.includes("едизм")) && !hasPrice) {
+        return "unit";
+      }
+      if (hasPrice && normalized.includes("материал")) return "price_material";
+      if (hasPrice && (normalized.includes("монтаж") || normalized.includes("достав"))) return "price_install";
+      if (hasPrice && (normalized.includes("издел") || normalized.includes("позици") || normalized.includes("шт") || normalized.includes("ед"))) {
+        return "price_unit";
+      }
+      if (hasPrice) return "price_unit";
+      return null;
+    }
+
+    function detectTableStart(rows, maxScan = 100) {
+      const scanLimit = Math.min(rows.length, maxScan);
+      for (let i = 0; i < scanLimit; i += 1) {
+        const row = rows[i] || [];
+        const rowText = row.map((cell) => String(cell || "").toLowerCase()).join(" ");
+        if (/(коммерческое предложение|\bкп\b|логотип)/i.test(rowText)) continue;
+        const filledCount = row.filter((cell) => cell !== null && cell !== undefined && String(cell).trim()).length;
+        if (filledCount < 3) continue;
+        const hasKeywords = /(наименован|назван|артикул|цен|размер|материал|кол.*во|ед.*изм)/i.test(rowText);
+        if (hasKeywords) return i;
+      }
+      return null;
+    }
+
+    function analyzeColumnContent(values) {
+      const samples = values.filter((v) => v != null).slice(0, 20);
+      if (!samples.length) return { type: null, confidence: 0 };
+
+      let dimMatches = 0;
+      let priceMatches = 0;
+      let nameMatches = 0;
+
+      samples.forEach((val) => {
+        const str = String(val).toLowerCase();
+        if (/\d{2,4}\s*[x×*]\s*\d{2,4}/.test(str)) dimMatches += 1;
+        if (/^\d{1,8}([.,]\d{1,2})?$/.test(str) && parseFloat(str) > 100) priceMatches += 1;
+        if (str.length > 10 && /[а-я]{3,}/.test(str)) nameMatches += 1;
+      });
+
+      const total = samples.length;
+      if (dimMatches / total > 0.5) return { type: "dims", confidence: dimMatches / total };
+      if (priceMatches / total > 0.6) return { type: "price", confidence: priceMatches / total };
+      if (nameMatches / total > 0.7) return { type: "name", confidence: nameMatches / total };
+
+      return { type: null, confidence: 0 };
+    }
+
+    function detectHeaderRow(rows) {
+      let best = { idx: null, score: 0 };
+      for (let rowIdx = 0; rowIdx < rows.length; rowIdx += 1) {
+        const row = rows[rowIdx] || [];
+        const values = row.filter((value) => value !== null && value !== undefined && String(value).trim() !== "");
+        if (!values.length) continue;
+        const normalized = row.map(normalizeHeaderText);
+        if (!normalized.some((text) => text && text !== "nan")) continue;
+        const sampleRows = rows.slice(rowIdx + 1, rowIdx + 21);
+        const { mapping } = detectSheetMapping(row, sampleRows);
+        const score = Object.values(mapping).filter((value) => value !== null).length;
+        if (score > best.score) best = { idx: rowIdx, score };
+      }
+      return best.score >= 1 ? best.idx : null;
+    }
+
+    function detectSheetMapping(headerRow, sampleRows = []) {
+      const mapping = {
+        name_col: null,
+        dims_col: null,
+        desc_col: null,
+        qty_col: null,
+        unit_col: null,
+        price_material_col: null,
+        price_install_col: null,
+        price_unit_col: null,
+        total_col: null,
+        comment_col: null,
+      };
+      const stats = {};
+      headerRow.forEach((value, idx) => {
+        const normalized = normalizeHeaderText(value);
+        stats[String(value)] = { normalized };
+        const canonical = matchHeaderToField(normalized);
+        if (!canonical) return;
+        const key = `${canonical}_col`;
+        if (mapping[key] === null) mapping[key] = idx;
+      });
+
+      if (sampleRows.length) {
+        const maxCols = Math.max(
+          headerRow.length,
+          ...sampleRows.map((row) => (row ? row.length : 0)),
+        );
+        const usedCols = new Set(Object.values(mapping).filter((value) => value !== null));
+        for (let colIdx = 0; colIdx < maxCols; colIdx += 1) {
+          if (usedCols.has(colIdx)) continue;
+          const values = sampleRows.map((row) => (row ? row[colIdx] : null));
+          const analysis = analyzeColumnContent(values);
+          if (analysis.type === "dims" && mapping.dims_col === null) {
+            mapping.dims_col = colIdx;
+            usedCols.add(colIdx);
+          }
+          if (analysis.type === "price" && mapping.price_unit_col === null) {
+            mapping.price_unit_col = colIdx;
+            usedCols.add(colIdx);
+          }
+          if (analysis.type === "name" && mapping.name_col === null) {
+            mapping.name_col = colIdx;
+            usedCols.add(colIdx);
+          }
+        }
+      }
+      const matches = Object.values(mapping).filter((value) => value !== null).length;
+      const confidence = matches ? Math.min(matches / 5, 1) : 0.0;
+      return { mapping, confidence, stats };
+    }
+
+    function normalizeMapping(input) {
+      const mapping = {
+        name_col: null,
+        dims_col: null,
+        desc_col: null,
+        qty_col: null,
+        unit_col: null,
+        price_material_col: null,
+        price_install_col: null,
+        price_unit_col: null,
+        total_col: null,
+        comment_col: null,
+      };
+      if (!input) return mapping;
+      Object.keys(mapping).forEach((key) => {
+        if (input[key] !== undefined && input[key] !== null && input[key] !== "") {
+          mapping[key] = Number(input[key]);
+        }
+      });
+      return mapping;
+    }
+
+    function getMappingForSheet(sheetName, headerRowValues, sampleRows, customMappings) {
+      const customSheet = customMappings?.sheets?.[sheetName];
+      if (customSheet) {
+        return { mapping: normalizeMapping(customSheet), source: "manual", confidence: 1 };
+      }
+      if (customMappings?.global) {
+        return { mapping: normalizeMapping(customMappings.global), source: "manual-global", confidence: 1 };
+      }
+      const detected = detectSheetMapping(headerRowValues || [], sampleRows || []);
+      return { mapping: detected.mapping, source: "auto", confidence: detected.confidence };
+    }
+
+    function normalizeString(value) {
+      if (value === null || value === undefined) return null;
+      const text = String(value).trim();
+      if (!text) return null;
+      const lowered = text.toLowerCase();
+      if (lowered === "nan" || lowered === "-") return null;
+      return text;
+    }
+
+    function toFloat(value) {
+      if (value === null || value === undefined) return null;
+      if (typeof value === "number") return Number.isFinite(value) ? value : null;
+      const text = String(value).trim();
+      if (!text) return null;
+      const cleaned = text.replace(/\s+/g, "").replace(/,/g, ".");
+      const match = cleaned.match(/-?\d+(?:\.\d+)?/);
+      if (!match) return null;
+      const num = parseFloat(match[0]);
+      return Number.isFinite(num) ? num : null;
+    }
+
+    function normalizeForFlags(text) {
+      return text
+        .toLowerCase()
+        .replace(/ё/g, "е")
+        .replace(/[-–—]+/g, " ")
+        .replace(/[^\w\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function extractPrefixedDim(text, stems) {
+      for (const stem of stems) {
+        const match = text.match(new RegExp(`${stem}\\s*[:=]?\\s*(\\d{2,5})`));
+        if (match) return parseInt(match[1], 10);
+      }
+      return null;
+    }
+
+    function parseDimensions(value) {
+      if (value === null || value === undefined) return [null, null, null];
+      const raw = String(value).trim();
+      if (!raw || raw.toLowerCase() === "nan") return [null, null, null];
+      let normalized = normalizeForFlags(raw).replace(/мм/g, "").replace(/mm/g, "");
+      normalized = normalized.replace(/[×*хx]/g, "x");
+      let w = extractPrefixedDim(normalized, ["w", "ш", "ширин"]);
+      let d = extractPrefixedDim(normalized, ["d", "г", "глубин"]);
+      let h = extractPrefixedDim(normalized, ["h", "в", "высот"]);
+      const numbers = normalized.match(/\d{2,5}/g) || [];
+      if (numbers.length >= 3 && !(w && d && h)) {
+        w = w || parseInt(numbers[0], 10);
+        d = d || parseInt(numbers[1], 10);
+        h = h || parseInt(numbers[2], 10);
+      }
+      return [w, d, h];
+    }
+
+    function computeUnitPriceWithSource({ priceUnit, total, qty }) {
+      const unitValue = toFloat(priceUnit);
+      if (unitValue !== null && unitValue > 0) return [unitValue, "price_unit"];
+      if (total !== null && qty !== null && qty > 0) return [total / qty, "total_div_qty"];
+      return [null, null];
+    }
+
+    function tokenize(text) {
+      return (text.match(/[a-zа-я0-9]+/gi) || []).map((token) => token.toLowerCase());
+    }
+
+    function normalizeText(text) {
+      return text
+        .toLowerCase()
+        .replace(/ё/g, "е")
+        .replace(/[-–—]+/g, " ")
+        .replace(/[^\w\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function extractCategory(text) {
+      const tokens = text.toLowerCase().match(/[а-яa-z0-9]+/gi) || [];
+      let bestCategory = "Прочее";
+      let bestScore = 0;
+
+      for (const [category, stems] of Object.entries(CATEGORY_STEMS)) {
+        if (category === "Прочее") continue;
+        let score = 0;
+        for (const token of tokens) {
+          for (const stem of stems) {
+            const regex = new RegExp(`^${stem}`, "i");
+            if (regex.test(token)) {
+              score += stem.length;
+            }
+          }
+        }
+        if (score > bestScore) {
+          bestCategory = category;
+          bestScore = score;
+        }
+      }
+
+      return bestCategory;
+    }
+
+    function detectFlags(name, description, materials) {
+      const text = `${name || ""} ${description || ""} ${materials || ""}`.toLowerCase();
+      const flags = {};
+
+      Object.entries(FLAG_TOKENS).forEach(([flag, tokens]) => {
+        flags[flag] = tokens.some((token) => {
+          const regex = new RegExp(token, "i");
+          return regex.test(text);
+        });
+      });
+
+      return flags;
+    }
+
+    function parseRow(row, mapping, sheetName, sourceRow) {
+      const rawName = mapping.name_col !== null ? row[mapping.name_col] : null;
+      const name = normalizeString(rawName);
+      if (!name) return [null, null];
+      const description = normalizeString(mapping.desc_col !== null ? row[mapping.desc_col] : null);
+
+      let [wMm, dMm, hMm] = parseDimensions(mapping.dims_col !== null ? row[mapping.dims_col] : null);
+      if (wMm === null && dMm === null && hMm === null) {
+        const merged = [name, description].filter(Boolean).join(" ");
+        [wMm, dMm, hMm] = parseDimensions(merged);
+      }
+
+      const qty = toFloat(mapping.qty_col !== null ? row[mapping.qty_col] : null);
+      const priceUnitVal = mapping.price_unit_col !== null ? row[mapping.price_unit_col] : null;
+      const priceTotalVal = mapping.total_col !== null ? row[mapping.total_col] : null;
+      const priceTotalExVat = toFloat(priceTotalVal);
+      const [priceUnitExVat, priceSource] = computeUnitPriceWithSource({
+        priceUnit: priceUnitVal,
+        total: priceTotalExVat,
+        qty,
+      });
+
+      if (priceUnitExVat === null || priceUnitExVat <= 0) return [null, null];
+
+      const widthM = wMm ? wMm / 1000 : null;
+      const heightM = hMm ? hMm / 1000 : null;
+      const pricePerLm = widthM ? priceUnitExVat / widthM : null;
+      const pricePerM2 = widthM && heightM ? priceUnitExVat / (widthM * heightM) : null;
+
+      const flags = detectFlags(name, description, mapping.desc_col !== null ? row[mapping.desc_col] : null);
+
+      const item = {
+        id: idCounter++,
+        source_sheet: sheetName,
+        source_row: sourceRow,
+        name,
+        description,
+        w_mm: wMm,
+        d_mm: dMm,
+        h_mm: hMm,
+        qty,
+        price_unit_ex_vat: priceUnitExVat,
+        price_total_ex_vat: priceTotalExVat,
+        price_per_lm: pricePerLm,
+        price_per_m2: pricePerM2,
+        has_led: flags.has_led ? 1 : 0,
+        mat_ldsp: flags.mat_ldsp ? 1 : 0,
+        mat_mdf: flags.mat_mdf ? 1 : 0,
+        mat_veneer: flags.mat_veneer ? 1 : 0,
+        has_glass: flags.has_glass ? 1 : 0,
+        has_metal: flags.has_metal ? 1 : 0,
+        has_stone: flags.has_stone ? 1 : 0,
+        has_acrylic: flags.has_acrylic ? 1 : 0,
+        category: extractCategory(normalizeText(`${name} ${description || ""}`)),
+        raw: {
+          name: rawName,
+          dims: mapping.dims_col !== null ? row[mapping.dims_col] : null,
+          desc: mapping.desc_col !== null ? row[mapping.desc_col] : null,
+          qty: mapping.qty_col !== null ? row[mapping.qty_col] : null,
+          price_unit: priceUnitVal,
+          total: priceTotalVal,
+        },
+      };
+
+      return [item, priceSource];
+    }
+
+    function analyzeColumn(values) {
+      const total = values.length;
+      if (!total) {
+        return {
+          dims_score: 0,
+          qty_score: 0,
+          price_score: 0,
+          name_score: 0,
+          desc_score: 0,
+        };
+      }
+      const textValues = [];
+      const numericValues = [];
+      let dimsHits = 0;
+      let nameHits = 0;
+      let materialHits = 0;
+
+      values.forEach((value) => {
+        if (value === null || value === undefined) return;
+        const text = String(value).trim();
+        if (!text || text.toLowerCase() === "nan") return;
+        if (/\d{2,5}\s*[x×*х]\s*\d{2,5}\s*[x×*х]\s*\d{2,5}/i.test(text)) dimsHits += 1;
+        textValues.push(text);
+        const num = toFloat(value);
+        if (num !== null) numericValues.push(num);
+        const lowered = text.toLowerCase();
+        if (NAME_KEYWORDS.some((token) => lowered.includes(token))) nameHits += 1;
+        if (MATERIAL_KEYWORDS.some((token) => lowered.includes(token))) materialHits += 1;
+      });
+
+      const textRatio = textValues.length / total;
+      const numericRatio = numericValues.length / total;
+      const dimsRatio = dimsHits / total;
+      const avgLen = textValues.length ? textValues.reduce((sum, t) => sum + t.length, 0) / textValues.length : 0;
+      const nameRatio = textValues.length ? nameHits / textValues.length : 0;
+      const materialRatio = textValues.length ? materialHits / textValues.length : 0;
+
+      let qtyScore = 0;
+      let priceScore = 0;
+      if (numericValues.length) {
+        const meanVal = numericValues.reduce((sum, v) => sum + v, 0) / numericValues.length;
+        const sorted = [...numericValues].sort((a, b) => a - b);
+        const medianVal = sorted[Math.floor(sorted.length / 2)];
+        if (meanVal >= 1 && meanVal <= 100) qtyScore = numericRatio * 0.9;
+        else if (meanVal > 0 && meanVal <= 200) qtyScore = numericRatio * 0.5;
+        if (medianVal >= 100 && medianVal <= 1e7) priceScore = numericRatio * (medianVal >= 1000 ? 1.0 : 0.6);
+      }
+
+      const nameScore = textRatio * (avgLen >= 3 && avgLen <= 60 ? 0.6 : 0.3) + nameRatio * 0.8;
+      const descScore = textRatio * Math.min(avgLen / 120, 1.0) + materialRatio * 0.6;
+
+      return {
+        dims_score: dimsRatio,
+        qty_score: qtyScore,
+        price_score: priceScore,
+        name_score: nameScore,
+        desc_score: descScore,
+      };
+    }
+
+    self.onmessage = async (event) => {
+      const { type, payload } = event.data;
+      if (type !== "start") return;
+      const { arrayBuffer, fileName, sheetNames, selectedSheets, customMappings } = payload;
+      console.info("[worker] start", { fileName, sheets: sheetNames?.length, selectedSheets });
+      idCounter = 1;
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      const actualSheets = sheetNames || workbook.SheetNames;
+      const targetSheets = selectedSheets && selectedSheets.length ? selectedSheets : actualSheets;
+
+      const summary = {
+        sheets_total: targetSheets.length,
+        sheets_ok: 0,
+        sheets_missing_price_unit: 0,
+        sheets_missing_qty: 0,
+        rows_total: 0,
+        rows_inserted: 0,
+        rows_skipped: 0,
+        rows_unit_price_from_unit: 0,
+        rows_unit_price_from_total_qty: 0,
+        sheets_problematic: 0,
+      };
+      const sheetReports = [];
+
+      for (let sheetIndex = 0; sheetIndex < targetSheets.length; sheetIndex += 1) {
+        const sheetName = targetSheets[sheetIndex];
+        const sheet = workbook.Sheets[sheetName];
+        if (!sheet) continue;
+        const range = XLSX.utils.decode_range(sheet["!ref"] || "A1:A1");
+        const previewRows = XLSX.utils.sheet_to_json(sheet, {
+          header: 1,
+          range: { s: range.s, e: { r: Math.min(range.e.r, HEADER_SCAN_ROWS), c: range.e.c } },
+          blankrows: false,
+          raw: true,
+        });
+        let headerRowIdx = detectTableStart(previewRows, HEADER_SCAN_ROWS);
+        if (headerRowIdx === null) {
+          headerRowIdx = detectHeaderRow(previewRows);
+        }
+        let mapping = null;
+        let headerRow = null;
+        let rowsTotal = 0;
+        let rowsInserted = 0;
+        let rowsSkipped = 0;
+        let confidence = 0;
+        let columns = [];
+        let mappingSource = "auto";
+
+        let headerRowValues = headerRowIdx !== null ? previewRows[headerRowIdx] || [] : [];
+        const sampleRows = headerRowIdx !== null ? previewRows.slice(headerRowIdx + 1, headerRowIdx + 21) : previewRows.slice(0, 20);
+        const mappingResult = getMappingForSheet(sheetName, headerRowValues, sampleRows, customMappings);
+        mapping = mappingResult.mapping;
+        confidence = mappingResult.confidence;
+        mappingSource = mappingResult.source;
+        if (headerRowIdx === null && mappingSource.startsWith("manual")) {
+          headerRowIdx = 0;
+          headerRowValues = previewRows[headerRowIdx] || [];
+        }
+        headerRow = headerRowIdx !== null ? headerRowIdx + 1 : null;
+        columns = headerRowValues.map((value) => (value === null || value === undefined ? "" : String(value)));
+        console.info("[worker] mapping", { sheetName, mappingSource, headerRow: headerRowIdx, mapping });
+
+        const detected = mappingSource.startsWith("manual")
+          ? mapping.name_col !== null
+          : confidence >= 0.35 && mapping.name_col !== null;
+        if (mapping.price_unit_col === null) summary.sheets_missing_price_unit += 1;
+        if (mapping.qty_col === null) summary.sheets_missing_qty += 1;
+        const missingCritical = !mapping.name_col || (mapping.price_unit_col === null && (mapping.total_col === null || mapping.qty_col === null));
+        if (missingCritical) summary.sheets_problematic += 1; else summary.sheets_ok += 1;
+
+        let itemsChunk = [];
+        if (detected && headerRowIdx !== null) {
+          const allRows = XLSX.utils.sheet_to_json(sheet, {
+            header: 1,
+            range: { s: { r: headerRowIdx + 1, c: range.s.c }, e: range.e },
+            blankrows: false,
+            raw: true,
+          });
+          for (let rowIdx = 0; rowIdx < allRows.length; rowIdx += 1) {
+            const row = allRows[rowIdx];
+            if (!row || !row.length) continue;
+            rowsTotal += 1;
+            summary.rows_total += 1;
+            const sourceRow = headerRowIdx + 2 + rowIdx;
+            const [parsed, priceSource] = parseRow(row, mapping, sheetName, sourceRow);
+            if (!parsed) {
+              rowsSkipped += 1;
+              summary.rows_skipped += 1;
+              continue;
+            }
+            itemsChunk.push(parsed);
+            rowsInserted += 1;
+            summary.rows_inserted += 1;
+            if (priceSource === "price_unit") summary.rows_unit_price_from_unit += 1;
+            if (priceSource === "total_div_qty") summary.rows_unit_price_from_total_qty += 1;
+            if (itemsChunk.length >= 500) {
+              self.postMessage({ type: "items", payload: { items: itemsChunk } });
+              itemsChunk = [];
+            }
+            if (rowsTotal % 500 === 0) {
+              self.postMessage({
+                type: "progress",
+                payload: {
+                  sheetIndex,
+                  sheetName,
+                  rowsTotal,
+                  rowsInserted,
+                  rowsSkipped,
+                  sheetsTotal: targetSheets.length,
+                  summary,
+                },
+              });
+            }
+          }
+        }
+        if (itemsChunk.length) {
+          self.postMessage({ type: "items", payload: { items: itemsChunk } });
+        }
+
+        sheetReports.push({
+          sheet_name: sheetName,
+          header_row: headerRow,
+          rows_total: rowsTotal,
+          rows_inserted: rowsInserted,
+          rows_skipped: rowsSkipped,
+          mapping,
+          columns,
+          mapping_source: mappingSource,
+          missing_critical_fields: missingCritical ? ["name", "price_source"].filter(Boolean) : [],
+        });
+
+        self.postMessage({
+          type: "progress",
+          payload: {
+            sheetIndex,
+            sheetName,
+            rowsTotal,
+            rowsInserted,
+            rowsSkipped,
+            sheetsTotal: targetSheets.length,
+            summary,
+          },
+        });
+      }
+
+      self.postMessage({ type: "done", payload: { summary, sheetReports } });
+    };
+  </script>
+  <script src="app.js"></script>
+</body>
+</html>
