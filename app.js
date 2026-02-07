@@ -29,6 +29,21 @@ function setUploadError(message) {
   }
 }
 
+function setMappingWarning(message) {
+  const box = document.getElementById('mapping-warning');
+  if (!box) {
+    if (message) alert(message);
+    return;
+  }
+  if (message) {
+    box.textContent = message;
+    box.classList.remove('hidden');
+  } else {
+    box.textContent = '';
+    box.classList.add('hidden');
+  }
+}
+
 function colIndexToLetter(index) {
   return COLUMN_LETTERS[index] || '';
 }
@@ -206,7 +221,24 @@ function readCellNumber(sheet, cellRef) {
 function parseNumericValue(value) {
   if (value === undefined || value === null) return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  const normalized = String(value).replace(/\s+/g, '').replace(',', '.');
+  let normalized = String(value)
+    .replace(/[\s\u00a0]+/g, '')
+    .replace(/[^\d,.\-]/g, '');
+  if (!normalized) return null;
+  normalized = normalized.replace(/(?!^)-/g, '');
+  const hasComma = normalized.includes(',');
+  const hasDot = normalized.includes('.');
+  if (hasComma && hasDot) {
+    const lastComma = normalized.lastIndexOf(',');
+    const lastDot = normalized.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      normalized = normalized.replace(/\./g, '').replace(',', '.');
+    } else {
+      normalized = normalized.replace(/,/g, '');
+    }
+  } else if (hasComma) {
+    normalized = normalized.replace(',', '.');
+  }
   const numeric = Number(normalized);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -214,9 +246,18 @@ function parseNumericValue(value) {
 function normalizeLabelText(value) {
   return String(value || '')
     .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/=/g, '')
-    .replace(/ё/g, 'е');
+    .replace(/ё/g, 'е')
+    .replace(/[,.():;–—-]/g, ' ')
+    .replace(/[^0-9a-zа-я\s]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isLaborHoursLabel(normalizedText) {
+  const tokens = normalizedText.split(' ').filter(Boolean);
+  const hasLabor = tokens.some((token) => token.startsWith('трудоемк'));
+  const hasHours = tokens.some((token) => token.startsWith('час')) || tokens.some((token) => token.startsWith('человеко'));
+  return hasLabor && hasHours;
 }
 
 function parseRef(rawRef, defaultSheet) {
@@ -246,7 +287,7 @@ function isNumericCell(cell) {
 
 function findCalcSummaryAnchors(workbook) {
   const labels = {
-    'вес(кг)': 'weightRef',
+    вескг: 'weightRef',
     трудоемкость: 'laborHoursRef',
     стоимостьдсп: 'dspRef',
     стоимостькромки: 'edgeRef',
@@ -266,7 +307,11 @@ function findCalcSummaryAnchors(workbook) {
       const cell = sheet[cellRef];
       if (!cell || typeof cell.v !== 'string') return;
       const normalized = normalizeLabelText(cell.v);
-      const anchorKey = labels[normalized];
+      const compact = normalized.replace(/\s+/g, '');
+      let anchorKey = labels[compact];
+      if (!anchorKey && !anchors.laborHoursRef && isLaborHoursLabel(normalized)) {
+        anchorKey = 'laborHoursRef';
+      }
       if (!anchorKey || anchors[anchorKey]) return;
       const decoded = XLSX.utils.decode_cell(cellRef);
       let foundValueCell = null;
@@ -425,10 +470,23 @@ function inferDetailRowContext(sheetMatrix, rowIndex) {
   };
 }
 
-function buildDetailBreakdown(workbook, leaves) {
+function readSheetCell(sheet, rowIndex, colIndex) {
+  if (!sheet || !Number.isInteger(rowIndex) || !Number.isInteger(colIndex) || colIndex < 0) return undefined;
+  const cellRef = XLSX.utils.encode_cell({ r: rowIndex - 1, c: colIndex });
+  return sheet[cellRef]?.v;
+}
+
+function buildDetailBreakdown(workbook, leaves, mapping, detailsSheetName) {
+  if (!mapping?.detailsStartRow || !mapping?.detailsEndRow) return [];
+  const sheetName = detailsSheetName || mapping.detailsSheet;
+  if (!sheetName) return [];
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) return [];
   const details = [];
   const grouped = new Map();
   leaves.forEach((leaf) => {
+    if (leaf.sheet !== sheetName) return;
+    if (leaf.row < mapping.detailsStartRow || leaf.row > mapping.detailsEndRow) return;
     const key = `${leaf.sheet}!${leaf.row}`;
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(leaf);
@@ -437,19 +495,18 @@ function buildDetailBreakdown(workbook, leaves) {
   grouped.forEach((leafItems, key) => {
     const [sheetName, rowStr] = key.split('!');
     const rowIndex = Number(rowStr);
-    const sheet = workbook.Sheets[sheetName];
-    const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
-    const context = inferDetailRowContext(matrix, rowIndex);
+    const nameRaw = readSheetCell(sheet, rowIndex, mapping.detailsNameCol);
+    const qty = parseNumericValue(readSheetCell(sheet, rowIndex, mapping.detailsQtyCol));
+    const length = parseNumericValue(readSheetCell(sheet, rowIndex, mapping.detailsLengthCol));
+    const width = parseNumericValue(readSheetCell(sheet, rowIndex, mapping.detailsWidthCol));
+    const thickness = parseNumericValue(readSheetCell(sheet, rowIndex, mapping.detailsThicknessCol));
     const cost = leafItems.reduce((sum, item) => sum + (item.value || 0), 0);
-    let area = context.area_m2;
-    if (!area && context.length_mm && context.width_mm && context.qty) {
-      area = (context.length_mm / 1000) * (context.width_mm / 1000) * context.qty;
-    }
+    const area = length && width && qty ? (length * width / 1e6) * qty : null;
     details.push({
-      name: context.name || `Строка ${rowIndex}`,
-      qty: context.qty,
+      name: nameRaw ? String(nameRaw).trim() : `Строка ${rowIndex}`,
+      qty: Number.isFinite(qty) ? qty : null,
       area_m2: area,
-      thickness: context.thickness,
+      thickness,
       cost: round2(cost),
       rowIndex,
     });
@@ -496,7 +553,7 @@ function readAnchorValue(workbook, ref) {
   return Number.isFinite(value) ? value : null;
 }
 
-function buildCalcSummary(workbook, anchors) {
+function buildCalcSummary(workbook, anchors, mapping, detailsSheetName) {
   const summary = {
     anchors,
     baseValues: {},
@@ -529,16 +586,18 @@ function buildCalcSummary(workbook, anchors) {
     const leafSum = dspTrace.leaves.reduce((sum, item) => sum + (item.value || 0), 0);
     const totalValue = summary.baseValues.dsp;
     const coverage = computeCoverage(leafSum, totalValue);
-    const details = buildDetailBreakdown(workbook, dspTrace.leaves);
+    const details = buildDetailBreakdown(workbook, dspTrace.leaves, mapping, detailsSheetName);
+    const usable = coverage !== null ? coverage > 0.995 : false;
+    const detailUsable = usable && details.length > 0;
     summary.breakdown.dsp = {
       leafCount: dspTrace.leaves.length,
       leafSum: round2(leafSum),
       totalValue,
       coverage,
-      details,
-      usable: coverage !== null ? coverage > 0.995 : false,
+      details: detailUsable ? details : [],
+      usable: detailUsable,
     };
-    summary.rates.dsp = buildDspRates(details);
+    summary.rates.dsp = buildDspRates(detailUsable ? details : []);
   }
 
   if (anchors.edgeRef) {
@@ -962,7 +1021,7 @@ function parseExcelWithMapping(workbook, mapping) {
   const furniture = parseFurniture(furnitureSheet, mapping);
   const dims = parseDimensions(sheet, mapping);
   const anchors = resolveAnchors(state.calcSummary?.anchors, mapping.anchorOverrides);
-  const calcSummary = buildCalcSummary(workbook, anchors);
+  const calcSummary = buildCalcSummary(workbook, anchors, mapping, state.activeSheet);
   const baseCostFromAnchors = calcSummary.baseValues.totalCost;
   const baseCost = Number.isFinite(baseCostFromAnchors)
     ? baseCostFromAnchors
@@ -1249,7 +1308,7 @@ function renderCalcBreakdown(spec) {
   if (!table) return;
   table.innerHTML = '';
   const breakdown = spec.calcSummary?.breakdown?.dsp;
-  if (!breakdown || !breakdown.details || breakdown.details.length === 0) {
+  if (!breakdown) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
     cell.colSpan = 4;
@@ -1260,6 +1319,21 @@ function renderCalcBreakdown(spec) {
     if (coverage) coverage.textContent = '—';
     if (leafSum) leafSum.textContent = '—';
     if (totalValue) totalValue.textContent = '—';
+    return;
+  }
+  if (!breakdown.details || breakdown.details.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    cell.textContent = breakdown.usable === false
+      ? 'Разбор ДСП недоступен: недостаточное покрытие или неполный маппинг.'
+      : 'Разбор ДСП не найден.';
+    row.appendChild(cell);
+    table.appendChild(row);
+    if (leafCount) leafCount.textContent = formatNumber(breakdown.leafCount);
+    if (coverage) coverage.textContent = breakdown.coverage ? `${round2(breakdown.coverage * 100)}%` : '—';
+    if (leafSum) leafSum.textContent = formatNumber(breakdown.leafSum, '₽');
+    if (totalValue) totalValue.textContent = formatNumber(breakdown.totalValue, '₽');
     return;
   }
   const headers = ['Деталь', 'Qty', 'Area (м²)', 'Cost (₽)'];
@@ -1490,11 +1564,18 @@ function attachEventHandlers() {
   });
 
   document.getElementById('proceed-btn').addEventListener('click', () => {
-    state.mapping = collectMapping();
-    state.originalSpec = parseExcelWithMapping(state.workbook, state.mapping);
-    showScreen('results-screen');
-    renderBaseSummary(state.originalSpec);
-    renderValidationSummary(state.originalSpec);
+    try {
+      setMappingWarning('');
+      state.mapping = collectMapping();
+      state.originalSpec = parseExcelWithMapping(state.workbook, state.mapping);
+      showScreen('results-screen');
+      renderBaseSummary(state.originalSpec);
+      renderValidationSummary(state.originalSpec);
+    } catch (error) {
+      console.error(error);
+      const message = error?.message ? `Ошибка при обработке: ${error.message}` : 'Ошибка при обработке файла.';
+      setMappingWarning(message);
+    }
   });
 
   document.getElementById('calculate-btn').addEventListener('click', () => {
