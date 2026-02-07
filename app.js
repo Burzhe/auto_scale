@@ -1621,10 +1621,15 @@ function calculateWeight(parts) {
   parts.forEach((part) => {
     if (!part.thickness || !part.length_mm || !part.qty) return;
     const density = getMaterialDensity(part.material);
-    const widths = part.widths_mm || [part.width_mm];
+    const isShelf = inferPartType(part.name) === 'shelf';
+    const lengths = isShelf && Array.isArray(part.widths_mm) && part.widths_mm.length
+      ? part.widths_mm
+      : [part.length_mm];
+    const widths = [part.width_mm];
     for (let i = 0; i < part.qty; i += 1) {
-      const w = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
-      const volumeM3 = (part.length_mm / 1000) * (w / 1000) * (part.thickness / 1000);
+      const lengthMm = lengths[Math.min(i, lengths.length - 1)] || part.length_mm || 0;
+      const widthMm = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
+      const volumeM3 = (lengthMm / 1000) * (widthMm / 1000) * (part.thickness / 1000);
       totalKg += volumeM3 * density;
     }
   });
@@ -1645,11 +1650,16 @@ function calculatePrice(parts, materials) {
   let total = 0;
   parts.forEach((part) => {
     if (!part.length_mm || !part.qty) return;
-    const widths = part.widths_mm || [part.width_mm];
+    const isShelf = inferPartType(part.name) === 'shelf';
+    const lengths = isShelf && Array.isArray(part.widths_mm) && part.widths_mm.length
+      ? part.widths_mm
+      : [part.length_mm];
+    const widths = [part.width_mm];
     let areaM2 = 0;
     for (let i = 0; i < part.qty; i += 1) {
-      const w = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
-      areaM2 += (part.length_mm / 1000) * (w / 1000);
+      const lengthMm = lengths[Math.min(i, lengths.length - 1)] || part.length_mm || 0;
+      const widthMm = widths[Math.min(i, widths.length - 1)] || part.width_mm || 0;
+      areaM2 += (lengthMm / 1000) * (widthMm / 1000);
     }
     const material = materials[part.material_id];
     if (material) {
@@ -1863,12 +1873,15 @@ function renderResultsTable(type, spec) {
   table.appendChild(headerRow);
 
   spec.corpus.forEach((part) => {
+    const isShelf = inferPartType(part.name) === 'shelf'
+      && Array.isArray(part.widths_mm)
+      && part.widths_mm.length > 0;
     const tr = document.createElement('tr');
     [
       part.name,
       part.material,
-      part.length_mm,
-      part.widths_mm ? part.widths_mm.join(', ') : part.width_mm,
+      isShelf ? part.widths_mm.join(', ') : part.length_mm,
+      part.width_mm,
       part.thickness,
       part.qty,
     ].forEach((value) => {
