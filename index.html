@@ -169,6 +169,16 @@
             </div>
             <button class="secondary auto-btn" data-auto="furniture">Автоопределить</button>
           </div>
+
+          <div class="panel">
+            <h3>5. Базовая стоимость</h3>
+            <div class="row">
+              <label>Ячейка с прямыми затратами</label>
+              <input type="text" id="base-cost-cell" placeholder="B120" data-cell-input>
+            </div>
+            <p class="hint">Можно выбрать ячейку с итоговой суммой «Прямые затраты».</p>
+            <button class="secondary auto-btn" data-auto="cost">Автоопределить</button>
+          </div>
         </div>
       </div>
 
@@ -278,7 +288,13 @@
     }
 
     function calcSpansForSection(sectionWidth) {
-      return Math.ceil(sectionWidth / MAX_SHELF_SPAN);
+      const spansByShelf = Math.ceil(sectionWidth / MAX_SHELF_SPAN);
+      const spansByFacade = Math.ceil(sectionWidth / MAX_FACADE_WIDTH);
+      let spans = Math.max(spansByShelf, spansByFacade);
+      if (sectionWidth >= PARTITION_THRESHOLD) {
+        spans = Math.max(spans, 2);
+      }
+      return spans;
     }
 
     function inferPartType(name) {
@@ -418,46 +434,136 @@
         corpus,
         warnings,
         sectionCount,
+        sections,
         spansPerSection,
         totalShelves: totalSpans,
         partitionCount: Math.max(sectionCount - 1, 0),
       };
     }
 
-    function recalculateFurniture(spec, sectionCount, spansPerSection) {
+    function petalsPerFacade(heightMm) {
+      if (heightMm <= 900) return 2;
+      if (heightMm <= 1400) return 3;
+      if (heightMm <= 1900) return 4;
+      if (heightMm <= 2400) return 5;
+      if (heightMm <= 2800) return 7;
+      return 8;
+    }
+
+    function recalculateFurniture(spec, corpusResult, newHeight) {
       const furniture = [];
       const warnings = [];
-      let totalFacadeCount = 0;
-      let shelfCount = 0;
-      let drawerCount = 0;
-      let wardrobeSections = 0;
+      const originalSections = splitSections(spec.dims.width || 0);
+      const oldSectionCount = originalSections.length || 1;
+      const newSections = corpusResult.sections || [];
+      const oldSpans = originalSections.reduce((sum, width) => sum + calcSpansForSection(width), 0);
+      const newSpans = (corpusResult.spansPerSection || []).reduce((sum, value) => sum + value, 0);
+      const spanRatio = oldSpans > 0 ? newSpans / oldSpans : 1;
+      const sectionRatio = oldSectionCount > 0 ? newSections.length / oldSectionCount : 1;
 
-      spec.corpus.forEach((part) => {
-        const type = inferPartType(part.name);
-        if (type === 'facade') totalFacadeCount += part.qty || 0;
-        if (type === 'shelf') shelfCount += part.qty || 0;
-        if (type === 'drawer') drawerCount += part.qty || 0;
-        if (type === 'rod') wardrobeSections += part.qty || 0;
-      });
-
-      const hingeCount = totalFacadeCount * 4;
-      const handleCount = totalFacadeCount + drawerCount;
-      const shelfHolderCount = shelfCount * 4;
-      const tieCount = Math.max(sectionCount - 1, 0) * 6;
-      const ledCount = spansPerSection.reduce((sum, value) => sum + value, 0);
-
-      const add = (name, qty, unit = 'шт', price = 0) => {
-        furniture.push({ name, qty, unit, price });
-      };
-
-      add('Петля', hingeCount);
-      add('Ручка', handleCount);
-      add('Полкодержатель', shelfHolderCount);
-      add('Стяжка', tieCount);
-      if (wardrobeSections > 0) {
-        add('Штанга гардеробная', wardrobeSections);
+      const oldShelves = spec.corpus.reduce((sum, part) => {
+        return inferPartType(part.name) === 'shelf' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const newShelves = corpusResult.totalShelves || 0;
+      if (!oldShelves || !newShelves) {
+        warnings.push('⚠️ Недостаточно данных по полкам — использован пересчёт по пролётам.');
       }
-      add('LED подсветка', ledCount);
+
+      const oldFacades = spec.corpus.reduce((sum, part) => {
+        return inferPartType(part.name) === 'facade' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const newFacades = corpusResult.corpus.reduce((sum, part) => {
+        return inferPartType(part.name) === 'facade' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const facadeTemplate = spec.corpus.find((part) => inferPartType(part.name) === 'facade');
+      const facadeHeight = facadeTemplate?.length_mm || newHeight || 2700;
+      const petals = petalsPerFacade(facadeHeight);
+
+      const oldDrawers = spec.corpus.reduce((sum, part) => {
+        return inferPartType(part.name) === 'drawer' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const handlesDrawerQty = oldDrawers ? Math.ceil(oldDrawers * sectionRatio) : 0;
+
+      let totalLedPower = 0;
+      let totalLedLength = 0;
+      const spanWidth = newSpans ? newSections.reduce((sum, width) => sum + width, 0) / newSpans : 0;
+      let handleDrawerWarningAdded = false;
+
+      if (spec.furniture && spec.furniture.length > 0) {
+        spec.furniture.forEach((item) => {
+          const nameLow = String(item.name || '').toLowerCase();
+          const baseQty = Number(item.qty || 0);
+          let newQty = baseQty;
+
+          if (nameLow.includes('петл') || nameLow.includes('чашк') || (nameLow.includes('заглушка') && nameLow.includes('петл'))) {
+            newQty = newFacades * petals;
+          } else if (nameLow.includes('ручк')) {
+            newQty = newFacades + handlesDrawerQty;
+            if (oldDrawers && handlesDrawerQty && !handleDrawerWarningAdded) {
+              warnings.push(`ℹ️ Ручки: учтены ящики ${oldDrawers}→${handlesDrawerQty} (коэф. секций ${sectionRatio.toFixed(2)})`);
+              handleDrawerWarningAdded = true;
+            }
+          } else if (nameLow.includes('полкодерж')) {
+            if (oldShelves > 0 && newShelves > 0) {
+              const supportsPerShelf = baseQty / oldShelves;
+              newQty = supportsPerShelf * newShelves;
+            } else {
+              newQty *= spanRatio;
+            }
+          } else if (nameLow.includes('стяжка межсекцион')) {
+            const stiazkiPerConnection = Math.max(1, Math.ceil((newHeight || spec.dims.height || 0) / 700));
+            newQty = newSections.length > 1 ? (newSections.length - 1) * stiazkiPerConnection : 0;
+          } else if (nameLow.includes('корректор фасада')) {
+            newQty = newFacades;
+          } else if (nameLow.includes('винт') || nameLow.includes('ключ')) {
+            newQty = baseQty ? Math.ceil(baseQty) : 2;
+          } else if (nameLow.includes('штанг')) {
+            if (!baseQty) {
+              newQty = 0;
+            } else {
+              const rodsPerOriginalSection = baseQty / oldSectionCount;
+              newQty = newSections.reduce((sum) => sum + Math.ceil(rodsPerOriginalSection), 0);
+            }
+          } else if (nameLow.includes('подсветк') || nameLow.includes('led') || nameLow.includes('освещен')) {
+            newQty *= spanRatio;
+            const ledLengthMm = Math.max(Math.round(spanWidth - 100), 0);
+            const totalLength = (ledLengthMm / 1000) * newQty;
+            const power = totalLength * 10;
+            totalLedPower += power;
+            totalLedLength += totalLength;
+          } else {
+            newQty *= spanRatio;
+          }
+
+          furniture.push({
+            ...item,
+            qty: Math.ceil(newQty),
+            unit: item.unit || 'шт',
+          });
+        });
+      } else {
+        const hingeCount = newFacades * 4;
+        const handleCount = newFacades + oldDrawers;
+        const shelfHolderCount = newShelves * 4;
+        const tieCount = Math.max(newSections.length - 1, 0) * 6;
+        const ledCount = newSpans;
+        const add = (name, qty, unit = 'шт', price = 0) => {
+          furniture.push({ name, qty, unit, price });
+        };
+        add('Петля', hingeCount);
+        add('Ручка', handleCount);
+        add('Полкодержатель', shelfHolderCount);
+        add('Стяжка', tieCount);
+        add('LED подсветка', ledCount);
+      }
+
+      if (totalLedPower > 50) {
+        warnings.push('⚠️ LED: Нужен доп. блок (мощность > 50 Вт)');
+      }
+      if (totalLedLength > 0) {
+        const blocksNeeded = Math.ceil(totalLedLength / 5);
+        warnings.push(`ℹ️ LED: Блок питания x${blocksNeeded}, ≥${Math.round(totalLedPower * 1.2 * 10) / 10} Вт`);
+      }
 
       return { furniture, warnings };
     }
@@ -511,7 +617,7 @@
       if (type === 'calculate') {
         const { spec, newWidth, newDepth, newHeight, overrides } = payload;
         const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides);
-        const furnitureResult = recalculateFurniture(spec, corpusResult.sectionCount, corpusResult.spansPerSection);
+        const furnitureResult = recalculateFurniture(spec, corpusResult, newHeight);
         const updatedSpec = {
           ...spec,
           corpus: corpusResult.corpus,
@@ -519,12 +625,22 @@
           dims: { width: newWidth, depth: newDepth, height: newHeight },
         };
         const weight = calculateWeight(updatedSpec.corpus);
-        const price = calculatePrice(updatedSpec.corpus, spec.materials || {});
+        const baseMaterialCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
+        const newMaterialCost = calculatePrice(updatedSpec.corpus, spec.materials || {});
+        let price = newMaterialCost;
+        if (spec.baseCost && baseMaterialCost > 0) {
+          price = spec.baseCost * (newMaterialCost / baseMaterialCost);
+        }
+        price = Math.round(price * 100) / 100;
+        const extraWarnings = [];
+        if (newHeight > 2500) {
+          extraWarnings.push('⚠️ Устойчивость: добавить антиопрокидывание');
+        }
         self.postMessage({
           type: 'result',
           payload: {
             spec: updatedSpec,
-            warnings: [...corpusResult.warnings, ...furnitureResult.warnings],
+            warnings: [...corpusResult.warnings, ...furnitureResult.warnings, ...extraWarnings],
             weight,
             price,
             structure: {

@@ -50,6 +50,9 @@ function showScreen(id) {
   const target = document.getElementById(id);
   target.classList.remove('hidden');
   target.classList.add('active');
+  if (id === 'results-screen' && state.originalSpec) {
+    renderBaseSummary(state.originalSpec);
+  }
 }
 
 function populateColumnSelects() {
@@ -188,7 +191,15 @@ function readCellValue(sheet, cellRef) {
 
 function readCellNumber(sheet, cellRef) {
   const value = readCellValue(sheet, cellRef);
-  const numeric = Number(value);
+  const numeric = parseNumericValue(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function parseNumericValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const normalized = String(value).replace(/\s+/g, '').replace(',', '.');
+  const numeric = Number(normalized);
   return Number.isFinite(numeric) ? numeric : null;
 }
 
@@ -218,6 +229,29 @@ function parseDimensions(sheet, mapping) {
   }
 
   return { width: width || null, depth: depth || null, height: height || null };
+}
+
+function detectBaseCostCell(sheet) {
+  const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+  const keywords = ['прямые затраты', 'итого', 'стоимость'];
+  for (let rowIndex = 0; rowIndex < json.length; rowIndex += 1) {
+    const row = json[rowIndex] || [];
+    for (let colIndex = 0; colIndex < row.length; colIndex += 1) {
+      const cellText = String(row[colIndex] || '').toLowerCase();
+      if (!keywords.some((keyword) => cellText.includes(keyword))) continue;
+      const candidate = parseNumericValue(row[colIndex + 1]);
+      if (Number.isFinite(candidate)) {
+        return `${colIndexToLetter(colIndex + 1)}${rowIndex + 1}`;
+      }
+      for (let next = colIndex + 1; next < row.length; next += 1) {
+        const alt = parseNumericValue(row[next]);
+        if (Number.isFinite(alt)) {
+          return `${colIndexToLetter(next)}${rowIndex + 1}`;
+        }
+      }
+    }
+  }
+  return '';
 }
 
 function parseMaterialDictionary(sheet, mapping) {
@@ -394,6 +428,7 @@ function applyMappingToUI(mapping) {
   if (Number.isInteger(mapping.furnitureNameCol)) document.getElementById('furniture-name-col').value = colIndexToLetter(mapping.furnitureNameCol);
   if (Number.isInteger(mapping.furnitureUnitCol)) document.getElementById('furniture-unit-col').value = colIndexToLetter(mapping.furnitureUnitCol);
   if (Number.isInteger(mapping.furniturePriceCol)) document.getElementById('furniture-price-col').value = colIndexToLetter(mapping.furniturePriceCol);
+  if (mapping.baseCostCell) document.getElementById('base-cost-cell').value = normalizeCellRef(mapping.baseCostCell);
 }
 
 function saveTemplate(name, mapping) {
@@ -447,6 +482,7 @@ function collectMapping() {
     furnitureNameCol: letterToColIndex(document.getElementById('furniture-name-col').value),
     furnitureUnitCol: letterToColIndex(document.getElementById('furniture-unit-col').value),
     furniturePriceCol: letterToColIndex(document.getElementById('furniture-price-col').value),
+    baseCostCell: normalizeCellRef(document.getElementById('base-cost-cell').value),
   };
 }
 
@@ -457,12 +493,16 @@ function parseExcelWithMapping(workbook, mapping) {
   const furnitureSheet = workbook.Sheets[mapping.furnitureSheet];
   const furniture = parseFurniture(furnitureSheet, mapping);
   const dims = parseDimensions(sheet, mapping);
+  const baseCost = mapping.baseCostCell ? readCellNumber(sheet, mapping.baseCostCell) : null;
+  const baseMaterialCost = calculatePrice(corpus, materials);
 
   return {
     dims,
     corpus,
     furniture,
     materials,
+    baseCost: Number.isFinite(baseCost) ? baseCost : null,
+    baseMaterialCost,
   };
 }
 
@@ -518,6 +558,27 @@ function calculatePrice(parts, materials) {
     }
   });
   return Math.round(total);
+}
+
+function getBasePriceFromSpec(spec) {
+  if (spec.baseCost !== null && spec.baseCost !== undefined) {
+    return spec.baseCost;
+  }
+  return calculatePrice(spec.corpus, spec.materials || {});
+}
+
+function renderBaseSummary(spec) {
+  const baseWeight = calculateWeight(spec.corpus);
+  const basePrice = getBasePriceFromSpec(spec);
+  document.getElementById('current-dims').textContent = formatDimensions(spec.dims);
+  document.getElementById('current-weight').textContent = formatNumber(baseWeight, 'кг');
+  document.getElementById('current-price').textContent = formatNumber(basePrice, '₽');
+  const widthInput = document.getElementById('new-width');
+  const depthInput = document.getElementById('new-depth');
+  const heightInput = document.getElementById('new-height');
+  if (!widthInput.value) widthInput.value = spec.dims.width || '';
+  if (!depthInput.value) depthInput.value = spec.dims.depth || '';
+  if (!heightInput.value) heightInput.value = spec.dims.height || '';
 }
 
 function renderResults(spec, weight, price, warnings) {
@@ -636,6 +697,14 @@ function updateMappingFromAuto(type) {
       furniturePriceCol: furnitureMapping.furniturePriceCol,
     });
   }
+  if (type === 'cost') {
+    const costCell = detectBaseCostCell(sheet);
+    if (!costCell) {
+      alert('Не удалось найти строку с прямыми затратами. Укажите ячейку вручную.');
+      return;
+    }
+    applyMappingToUI({ baseCostCell: costCell });
+  }
   const indicator = document.getElementById('cursor-indicator');
   if (indicator) {
     indicator.textContent = 'Автоопределение применено к текущему блоку.';
@@ -655,7 +724,8 @@ async function handleFileUpload(file) {
   renderSheetOptions();
   renderPreview(workbook.Sheets[state.activeSheet]);
   const mapping = autoDetectMapping(workbook.Sheets[state.activeSheet]);
-  applyMappingToUI(mapping);
+  const costCell = detectBaseCostCell(workbook.Sheets[state.activeSheet]);
+  applyMappingToUI({ ...mapping, baseCostCell: costCell });
   showScreen('mapping-screen');
 }
 
@@ -714,11 +784,7 @@ function attachEventHandlers() {
     state.mapping = collectMapping();
     state.originalSpec = parseExcelWithMapping(state.workbook, state.mapping);
     showScreen('results-screen');
-    const baseWeight = calculateWeight(state.originalSpec.corpus);
-    const basePrice = calculatePrice(state.originalSpec.corpus, state.originalSpec.materials || {});
-    document.getElementById('current-dims').textContent = formatDimensions(state.originalSpec.dims);
-    document.getElementById('current-weight').textContent = formatNumber(baseWeight, 'кг');
-    document.getElementById('current-price').textContent = formatNumber(basePrice, '₽');
+    renderBaseSummary(state.originalSpec);
   });
 
   document.getElementById('calculate-btn').addEventListener('click', () => {
