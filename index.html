@@ -286,7 +286,7 @@
             </select>
           </div>
           <label class="checkbox">
-            <input type="checkbox" id="enforce-rules">
+            <input type="checkbox" id="enforce-rules" checked>
             Применять правила конструктива (1200/800/600)
           </label>
         </div>
@@ -330,6 +330,8 @@
             <div>Сумма leaf: <strong id="calc-leaf-sum">—</strong></div>
             <div>Итого по калькуляции: <strong id="calc-total">—</strong></div>
           </div>
+          <div id="calc-breakdown-reason" class="hint"></div>
+          <button id="calc-toggle-sources" class="secondary hidden" type="button">Показать источники</button>
           <table id="calc-breakdown-table"></table>
         </div>
 
@@ -584,13 +586,9 @@
       const baseHeight = (spec.dims && spec.dims.height) || 0;
 
       const baseSections = inferSectionCount(spec);
-      const minModules = newWidth >= PARTITION_THRESHOLD ? 2 : 1;
       let modules = enforceRules
-        ? Math.max(minModules, Math.ceil(newWidth / MAX_SECTION_WIDTH))
+        ? Math.max(1, Math.ceil(newWidth / MAX_SECTION_WIDTH))
         : Math.max(1, baseSections);
-      if (enforceRules) {
-        modules = Math.max(modules, Math.ceil(newWidth / MAX_SHELF_SPAN));
-      }
       if (overrides.sectionCount !== undefined && overrides.sectionCount !== null && overrides.sectionCount !== '') {
         modules = Math.max(1, Math.round(overrides.sectionCount));
       }
@@ -603,29 +601,41 @@
       const backsBase = parts.filter((p) => inferPartType(p.name) === 'back');
       const sidesBase = parts.filter((p) => inferPartType(p.name) === 'side');
       const basesBase = parts.filter((p) => inferPartType(p.name) === 'base');
+      const partitionsBase = parts.filter((p) => inferPartType(p.name) === 'partition');
       const plinthBase = parts.filter((p) => String(p.name || '').toLowerCase().includes('цокол'));
 
       const shelfTpl = pickTemplate(shelvesBase);
       const baseTpls = basesBase.length ? basesBase : [];
       const backTpls = backsBase.length ? backsBase : [];
       const sideTpls = sidesBase.length ? sidesBase : [];
+      const partitionTpl = pickTemplate(partitionsBase, 'перегород');
       const plinthTpl = pickTemplate(plinthBase);
 
       const facadeTiersBase = detectFacadeTiers(facadesBase);
-      const baseTierHeights = facadeTiersBase.length
-        ? facadeTiersBase.map((t) => t.height)
-        : (sideTpls.length ? Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values())
+      let baseTierHeights = facadeTiersBase.map((t) => t.height);
+      if (!baseTierHeights.length && sideTpls.length) {
+        baseTierHeights = Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values())
           .filter((n) => n > 0)
-          .sort((a, b) => b - a) : []);
+          .sort((a, b) => b - a);
+      }
       const basePlinth = detectPlinthHeight(spec, baseTierHeights);
-      const scaled = scaleTierHeights(baseTierHeights, baseHeight, newHeight, basePlinth);
-      const newTierHeights = scaled.tiers;
-      const plinthHeight = scaled.plinth;
+      const plinthHeight = basePlinth || 0;
+      const doorHeight = Math.max(0, Math.round(newHeight - plinthHeight));
+      const baseDoorSum = baseTierHeights.reduce((s, h) => s + h, 0) || doorHeight;
+      const scaledTierHeights = baseTierHeights.length
+        ? baseTierHeights.map((h) => Math.max(1, Math.round((h / baseDoorSum) * doorHeight)))
+        : [];
+      if (scaledTierHeights.length) {
+        const drift = doorHeight - scaledTierHeights.reduce((s, h) => s + h, 0);
+        scaledTierHeights[scaledTierHeights.length - 1] += drift;
+      }
 
       const baseModuleWidth = baseSections ? Math.round(baseWidth / baseSections) : baseWidth;
+      const baseShelfLength = shelfTpl?.length_mm || 0;
+      const baseModuleCount = baseShelfLength ? Math.max(1, Math.round(baseWidth / baseShelfLength)) : baseSections || 1;
 
       const shelvesTotalBase = shelvesBase.reduce((s, p) => s + (p.qty || 0), 0);
-      const baseShelvesPerModule = baseSections ? shelvesTotalBase / baseSections : 0;
+      const baseShelvesPerModule = baseModuleCount ? shelvesTotalBase / baseModuleCount : 0;
       let shelvesTotal = shelvesTotalBase;
       if (overrides.shelfCount !== undefined && overrides.shelfCount !== null && overrides.shelfCount !== '') {
         shelvesTotal = Math.max(0, Math.round(overrides.shelfCount));
@@ -634,19 +644,23 @@
       }
       const shelvesPerModule = distributeEvenly(shelvesTotal, modules);
 
-      const tierQtys = facadeTiersBase.map((t) => Math.round(t.qty || 0)).filter((n) => n > 0);
-      const baseDoorsPerRow = mode(tierQtys) || Math.max(1, ...tierQtys, 1);
-      const baseDoorWidth = facadeTiersBase.length ? Math.round(facadeTiersBase[0].template.width_mm || 0) : 0;
-      const baseGap = baseDoorsPerRow && baseDoorWidth ? Math.max(0, Math.round(baseWidth - baseDoorWidth * baseDoorsPerRow)) : 0;
+      const baseDoorsTotal = facadeTiersBase.length
+        ? Math.max(...facadeTiersBase.map((t) => Math.round(t.qty || 0)), 1)
+        : 0;
+      const baseDoorsPerModule = baseSections && baseDoorsTotal ? Math.max(1, Math.round(baseDoorsTotal / baseSections)) : 1;
 
-      let doorsPerRow = baseDoorsPerRow || 1;
-      if (enforceRules) {
-        const available = Math.max(0, newWidth - baseGap);
-        const needed = Math.ceil(available / MAX_FACADE_WIDTH);
-        doorsPerRow = Math.max(doorsPerRow, needed);
-      }
-
-      const facadeWidth = Math.max(1, Math.round((Math.max(0, newWidth - baseGap)) / doorsPerRow));
+      const facadePlan = new Map();
+      let totalDoors = 0;
+      let internalPartitions = 0;
+      moduleWidths.forEach((mw) => {
+        const doorsPerModule = enforceRules
+          ? Math.max(1, Math.ceil(mw / MAX_FACADE_WIDTH))
+          : Math.max(1, baseDoorsPerModule);
+        const doorWidth = Math.max(1, Math.round(mw / doorsPerModule));
+        totalDoors += doorsPerModule;
+        internalPartitions += Math.max(0, doorsPerModule - 1);
+        groupAdd(facadePlan, doorWidth, doorsPerModule);
+      });
 
       const newParts = [];
       const warnings = [];
@@ -691,25 +705,25 @@
         }
       }
 
-      if (sideTpls.length && newTierHeights.length) {
+      if (sideTpls.length && scaledTierHeights.length) {
         const baseHeights = Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values())
           .filter((n) => n > 0)
           .sort((a, b) => b - a);
         baseHeights.forEach((bh, idx) => {
           const tpl = sideTpls.find((p) => Math.round(p.length_mm || 0) === bh) || sideTpls[0];
           const perModule = baseSections && tpl.qty ? tpl.qty / baseSections : 2;
-          const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
+          const h = scaledTierHeights[Math.min(idx, scaledTierHeights.length - 1)];
           newParts.push(clonePart(tpl, { length_mm: h, width_mm: newDepth, qty: Math.round(perModule * modules) }));
         });
       }
 
-      if (backTpls.length && newTierHeights.length) {
+      if (backTpls.length && scaledTierHeights.length) {
         const baseHeights = Array.from(new Set(backTpls.map((p) => Math.round(p.length_mm || 0))).values())
           .filter((n) => n > 0)
           .sort((a, b) => b - a);
         baseHeights.forEach((bh, idx) => {
           const tpl = backTpls.find((p) => Math.round(p.length_mm || 0) === bh) || backTpls[0];
-          const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
+          const h = scaledTierHeights[Math.min(idx, scaledTierHeights.length - 1)];
           const map = new Map();
           moduleWidths.forEach((mw) => groupAdd(map, mw, 1));
           for (const [mw, qty] of map.entries()) {
@@ -718,16 +732,30 @@
         });
       }
 
-      if (facadeTiersBase.length && newTierHeights.length) {
+      if (facadeTiersBase.length && scaledTierHeights.length) {
         facadeTiersBase.forEach((tier, idx) => {
           const tpl = tier.template;
-          const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
+          const h = scaledTierHeights[Math.min(idx, scaledTierHeights.length - 1)];
           const name = tpl.name || `фасад${idx + 1}`;
-          newParts.push(clonePart(tpl, { name, length_mm: h, width_mm: facadeWidth, qty: Math.round(doorsPerRow) }));
+          for (const [width, qty] of facadePlan.entries()) {
+            newParts.push(clonePart(tpl, { name, length_mm: h, width_mm: width, qty: Math.round(qty) }));
+          }
         });
       }
 
-      const regenerated = new Set(['shelf', 'facade', 'back', 'side', 'base']);
+      if (partitionTpl) {
+        const betweenModules = Math.max(0, modules - 1);
+        const totalPartitions = betweenModules + internalPartitions;
+        if (totalPartitions > 0) {
+          const lengthScaled = approxEqual(partitionTpl.length_mm, baseHeight, 60)
+            ? newHeight
+            : Math.round((partitionTpl.length_mm || 0) * (baseHeight ? newHeight / baseHeight : 1));
+          const widthScaled = approxEqual(partitionTpl.width_mm, baseDepth, 60) ? newDepth : partitionTpl.width_mm;
+          newParts.push(clonePart(partitionTpl, { length_mm: lengthScaled, width_mm: widthScaled, qty: totalPartitions }));
+        }
+      }
+
+      const regenerated = new Set(['shelf', 'facade', 'back', 'side', 'base', 'partition']);
       parts.forEach((p) => {
         const t = inferPartType(p.name);
         if (regenerated.has(t)) return;
@@ -743,7 +771,7 @@
         warnings,
         sectionCount: modules,
         totalShelves: shelvesTotal,
-        partitionCount: Math.max(0, modules - 1),
+        partitionCount: Math.max(0, modules - 1) + internalPartitions,
       };
     }
 
@@ -762,13 +790,27 @@
       return (part.length_mm * part.width_mm * part.qty) / 1e6;
     }
 
-    function calculateWeight(parts) {
+    function inferDensityFromSpec(spec) {
+      const baseWeight = Number(spec?.calcSummary?.baseValues?.weight);
+      if (!Number.isFinite(baseWeight) || baseWeight <= 0) return 730;
+      const volume = (spec?.corpus || []).reduce((sum, part) => {
+        if (!part.thickness || !part.length_mm || !part.width_mm || !part.qty) return sum;
+        const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000);
+        const thicknessM = part.thickness / 1000;
+        return sum + areaM2 * thicknessM * part.qty;
+      }, 0);
+      if (!volume) return 730;
+      const density = baseWeight / volume;
+      return Number.isFinite(density) && density > 0 ? density : 730;
+    }
+
+    function calculateWeight(parts, density = 730) {
       let totalKg = 0;
       parts.forEach((part) => {
         if (!part.thickness || !part.length_mm || !part.width_mm || !part.qty) return;
         const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000);
         const thicknessM = part.thickness / 1000;
-        totalKg += 730 * areaM2 * thicknessM * part.qty;
+        totalKg += density * areaM2 * thicknessM * part.qty;
       });
       return Math.round(totalKg * 100) / 100;
     }
@@ -853,7 +895,8 @@ function calculateDspCostFromRates(parts, rateInfo) {
           furniture: furnitureResult.furniture,
           dims: { width: newWidth, depth: newDepth, height: newHeight },
         };
-        const weight = calculateWeight(updatedSpec.corpus);
+        const density = inferDensityFromSpec(spec);
+        const weight = calculateWeight(updatedSpec.corpus, density);
         const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
         const baseHardwareCostFallback = calculateFurnitureCost(spec.furniture || []);
         const baseDspCost = Number.isFinite(baseValues.dsp) ? baseValues.dsp : baseMaterialsCost;
@@ -894,9 +937,15 @@ function calculateDspCostFromRates(parts, rateInfo) {
         const recognizedBase = baseDspCost + baseEdgeCost + basePlasticCost + baseFabricCost
           + baseHardwareCost + basePackCost + baseLaborCost;
         const otherDelta = baseTotalCost - recognizedBase;
+        let otherRatio = 1;
+        if (otherDriver === 'area') otherRatio = areaRatio;
+        if (otherDriver === 'parts') otherRatio = partsRatio;
+        if (otherDriver === 'sections') otherRatio = sectionsRatio;
+        if (otherDriver === 'fixed') otherRatio = 1;
+        const newOther = otherDelta * otherRatio;
 
         const price = round2(newDspCost + newEdgeCost + newPlasticCost + newFabricCost
-          + newHardwareCost + newPackCost + newLaborCost + otherDelta);
+          + newHardwareCost + newPackCost + newLaborCost + newOther);
         const extraWarnings = [];
         if (newHeight > 2500) {
           extraWarnings.push('⚠️ Устойчивость: добавить антиопрокидывание');

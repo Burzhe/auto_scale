@@ -10,6 +10,7 @@ const state = {
   previewClickBound: false,
   activeResultsTab: 'corpus',
   calcSummary: null,
+  showCalcSources: false,
 };
 
 const COLUMN_LETTERS = Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i));
@@ -261,8 +262,42 @@ function isNumericCell(cell) {
   return Number.isFinite(parseNumericValue(cell.v));
 }
 
+function findSummaryAnchorsInSheet(sheet, sheetName, labelMap) {
+  const anchors = {};
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1');
+  const labelEntries = Object.entries(labelMap).sort((a, b) => b[0].length - a[0].length);
+
+  for (let r = range.s.r; r <= range.e.r; r += 1) {
+    for (let c = range.s.c; c <= range.e.c; c += 1) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = sheet[addr];
+      if (!cell || cell.v == null) continue;
+      const normalized = normalizeLabelText(cell.v);
+      if (!normalized) continue;
+
+      for (const [labelKey, anchorKey] of labelEntries) {
+        if (anchors[anchorKey]) continue;
+        if (normalized === labelKey || normalized.startsWith(labelKey) || normalized.includes(labelKey)) {
+          let valueRef = null;
+          for (let offset = 1; offset <= 3; offset += 1) {
+            const rightAddr = XLSX.utils.encode_cell({ r, c: c + offset });
+            const rightCell = sheet[rightAddr];
+            if (rightCell && (rightCell.v != null || rightCell.f)) {
+              valueRef = `${sheetName}!${rightAddr}`;
+              break;
+            }
+          }
+          if (valueRef) anchors[anchorKey] = valueRef;
+          break;
+        }
+      }
+    }
+  }
+
+  return anchors;
+}
+
 function findCalcSummaryAnchors(workbook) {
-  // Keys must be normalized with normalizeLabelText()
   const labels = {
     вескг: 'weightRef',
     трудоемкость: 'laborHoursRef',
@@ -274,58 +309,27 @@ function findCalcSummaryAnchors(workbook) {
     стоимостьфурнитурыотч: 'hwRepRef',
     стоимостьупаковки: 'packRef',
     трудрабочих: 'laborRef',
+    прямыезатраты: 'totalCostRef',
+    стоимостьрасчетасуммарно: 'totalCostRef',
   };
 
-  const labelEntries = Object.entries(labels).sort((a, b) => b[0].length - a[0].length);
+  const normalizedSheetName = (name) => normalizeLabelText(name);
+  const preferred = workbook.SheetNames.find((name) => normalizedSheetName(name).includes('плитнматериал'));
+  const orderedSheets = preferred
+    ? [preferred, ...workbook.SheetNames.filter((name) => name !== preferred)]
+    : workbook.SheetNames.slice();
 
-  let totalCostRef = null;
   const anchors = {};
-
-  workbook.SheetNames.forEach((sheetName) => {
+  orderedSheets.forEach((sheetName) => {
     const ws = workbook.Sheets[sheetName];
-    const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
-
-    for (let r = range.s.r; r <= range.e.r; r++) {
-      for (let c = range.s.c; c <= range.e.c; c++) {
-        const addr = XLSX.utils.encode_cell({ r, c });
-        const cell = ws[addr];
-        if (!cell || cell.v == null) continue;
-
-        const normalized = normalizeLabelText(cell.v);
-        if (!normalized) continue;
-
-
-        // total cost label (different templates call it either "Прямые затраты" or "Стоимость расчета суммарно")
-        if (!totalCostRef) {
-          const isTotalCostLabel = (normalized === 'стоимостьрасчетасуммарно')
-            || normalized.startsWith('прямыезатрат')
-            || normalized.includes('прямыезатрат');
-          if (isTotalCostLabel) {
-            const right = XLSX.utils.encode_cell({ r, c: c + 1 });
-            const rightCell = ws[right];
-            if (rightCell && isNumericCell(rightCell)) {
-              totalCostRef = `${sheetName}!${right}`;
-            } else if (rightCell) {
-              // still accept non-empty (e.g. formula / string number), numeric will be parsed later
-              totalCostRef = `${sheetName}!${right}`;
-            }
-          }
-        }
-
-        // other anchors (match by contains/prefix to tolerate extra words like ", человеко-часы")
-        for (const [labelKey, anchorKey] of labelEntries) {
-          if (normalized === labelKey || normalized.startsWith(labelKey) || normalized.includes(labelKey)) {
-            if (anchors[anchorKey]) break;
-            const right = XLSX.utils.encode_cell({ r, c: c + 1 });
-            if (ws[right]) anchors[anchorKey] = `${sheetName}!${right}`;
-            break;
-          }
-        }
-      }
-    }
+    if (!ws) return;
+    const found = findSummaryAnchorsInSheet(ws, sheetName, labels);
+    Object.entries(found).forEach(([key, value]) => {
+      if (!anchors[key]) anchors[key] = value;
+    });
   });
 
-  return { totalCostRef, ...anchors };
+  return anchors;
 }
 
 function parseRefsFromFormula(formulaString) {
@@ -607,15 +611,17 @@ function buildDspRates(details) {
   let totalArea = 0;
   let totalCost = 0;
   details.forEach((item) => {
-    if (!item.area_m2 || !item.cost) return;
-    const thicknessKey = item.thickness ? String(item.thickness) : null;
+    const area = Number(item.area_m2 || 0);
+    const cost = Number(item.cost_rub ?? item.cost ?? 0);
+    if (!area || !cost) return;
+    const thicknessKey = item.thickness_mm ? String(Math.round(item.thickness_mm)) : (item.thickness ? String(item.thickness) : null);
     if (thicknessKey) {
       totals[thicknessKey] = totals[thicknessKey] || { area: 0, cost: 0 };
-      totals[thicknessKey].area += item.area_m2;
-      totals[thicknessKey].cost += item.cost;
+      totals[thicknessKey].area += area;
+      totals[thicknessKey].cost += cost;
     }
-    totalArea += item.area_m2;
-    totalCost += item.cost;
+    totalArea += area;
+    totalCost += cost;
   });
   Object.keys(totals).forEach((key) => {
     const area = totals[key].area;
@@ -633,6 +639,193 @@ function readAnchorValue(workbook, ref) {
   if (!parsed || !parsed.cell) return null;
   const value = parseNumericValue(parsed.cell.v);
   return Number.isFinite(value) ? value : null;
+}
+
+function extractA1Refs(formulaString) {
+  if (!formulaString) return [];
+  const formula = String(formulaString).replace(/\$/g, '').toUpperCase();
+  return formula.match(/[A-Z]{1,3}\d+/g) || [];
+}
+
+function expandSumRange(rangeRef) {
+  if (!rangeRef) return [];
+  const cleaned = rangeRef.replace(/\$/g, '').toUpperCase();
+  if (!cleaned.includes(':')) return [cleaned];
+  const range = XLSX.utils.decode_range(cleaned);
+  const refs = [];
+  for (let r = range.s.r; r <= range.e.r; r += 1) {
+    for (let c = range.s.c; c <= range.e.c; c += 1) {
+      refs.push(XLSX.utils.encode_cell({ r, c }));
+    }
+  }
+  return refs;
+}
+
+function parseSumFormulaRefs(formulaString) {
+  if (!formulaString) return [];
+  const formula = String(formulaString).replace(/\s+/g, '');
+  const match = formula.match(/sum\(([^)]+)\)/i);
+  if (!match) return [];
+  const inner = match[1];
+  const parts = inner.split(/[;,]/).map((part) => part.trim()).filter(Boolean);
+  return parts.flatMap((part) => expandSumRange(part));
+}
+
+function aggregateItemsByName(items) {
+  const grouped = new Map();
+  items.forEach((item) => {
+    const key = String(item.name || '').trim() || 'Без названия';
+    const entry = grouped.get(key) || {
+      name: key,
+      qty: 0,
+      area_m2: 0,
+      cost_rub: 0,
+    };
+    entry.qty += Number(item.qty || 0);
+    entry.area_m2 += Number(item.area_m2 || 0);
+    entry.cost_rub += Number(item.cost_rub || 0);
+    grouped.set(key, entry);
+  });
+  return Array.from(grouped.values());
+}
+
+function buildChipboardBreakdown(workbook, totalRef) {
+  const parsed = parseRef(totalRef);
+  if (!parsed || !parsed.sheetName || !parsed.cellRef) {
+    return {
+      totalValue: 0,
+      leafRefs: [],
+      leafSum: 0,
+      coverage: null,
+      items: [],
+      aggregated: [],
+      debug: { reason: 'bad total cell ref' },
+    };
+  }
+
+  const sheet = workbook.Sheets[parsed.sheetName];
+  if (!sheet) {
+    return {
+      totalValue: 0,
+      leafRefs: [],
+      leafSum: 0,
+      coverage: null,
+      items: [],
+      aggregated: [],
+      debug: { reason: 'sheet not found' },
+    };
+  }
+
+  const totalCell = sheet[parsed.cellRef];
+  const totalValue = parseNumericValue(totalCell?.v) || 0;
+  const totalFormula = getCellFormulaString(totalCell);
+  if (!totalFormula) {
+    return {
+      totalValue,
+      leafRefs: [],
+      leafSum: 0,
+      coverage: null,
+      items: [],
+      aggregated: [],
+      debug: { reason: 'total cell has no formula' },
+    };
+  }
+
+  const termCells = extractA1Refs(totalFormula);
+  if (!termCells.length) {
+    return {
+      totalValue,
+      leafRefs: [],
+      leafSum: 0,
+      coverage: null,
+      items: [],
+      aggregated: [],
+      debug: { reason: 'term cells not found', formula: totalFormula },
+    };
+  }
+
+  const leafSet = new Set();
+  const leafToTerm = new Map();
+  termCells.forEach((termCellRef) => {
+    const termCell = sheet[termCellRef];
+    const termFormula = getCellFormulaString(termCell);
+    const sumRefs = parseSumFormulaRefs(termFormula);
+    if (sumRefs.length) {
+      sumRefs.forEach((leafRef) => {
+        leafSet.add(leafRef);
+        if (!leafToTerm.has(leafRef)) leafToTerm.set(leafRef, termCellRef);
+      });
+    } else {
+      leafSet.add(termCellRef);
+      if (!leafToTerm.has(termCellRef)) leafToTerm.set(termCellRef, termCellRef);
+    }
+  });
+
+  const leafRefs = Array.from(leafSet);
+  const items = [];
+  let leafSum = 0;
+
+  leafRefs.forEach((leafRef) => {
+    const leafCell = sheet[leafRef];
+    const cost = parseNumericValue(leafCell?.v);
+    if (!Number.isFinite(cost) || cost === 0) return;
+    const addr = XLSX.utils.decode_cell(leafRef);
+    const row = addr.r + 1;
+    const name = sheet[`A${row}`]?.v;
+    const thickness = parseNumericValue(sheet[`B${row}`]?.v);
+    const length = parseNumericValue(sheet[`C${row}`]?.v);
+    const width = parseNumericValue(sheet[`D${row}`]?.v);
+    const qty = parseNumericValue(sheet[`I${row}`]?.v);
+
+    let area = null;
+    let areaCell = null;
+    if (Number.isFinite(length) && Number.isFinite(width) && Number.isFinite(qty) && qty > 0) {
+      area = (length * width * qty) / 1e6;
+    } else {
+      const areaAddr = XLSX.utils.encode_cell({ r: addr.r, c: Math.max(0, addr.c - 1) });
+      const areaVal = parseNumericValue(sheet[areaAddr]?.v);
+      if (Number.isFinite(areaVal) && areaVal > 0) {
+        area = areaVal;
+        areaCell = areaAddr;
+      }
+    }
+
+    items.push({
+      name: String(name || '').trim() || `Строка ${row}`,
+      length_mm: Number.isFinite(length) ? length : null,
+      width_mm: Number.isFinite(width) ? width : null,
+      thickness_mm: Number.isFinite(thickness) ? thickness : null,
+      qty: Number.isFinite(qty) ? qty : null,
+      area_m2: Number.isFinite(area) ? area : null,
+      cost_rub: round2(cost),
+      sources: {
+        totalCell: `${parsed.sheetName}!${parsed.cellRef}`,
+        colTotalCell: `${parsed.sheetName}!${leafToTerm.get(leafRef) || ''}`,
+        leafCell: `${parsed.sheetName}!${leafRef}`,
+        areaCell: areaCell ? `${parsed.sheetName}!${areaCell}` : null,
+        unitPriceCell: null,
+      },
+    });
+
+    leafSum += cost;
+  });
+
+  const coverage = totalValue ? leafSum / totalValue : null;
+  const aggregated = aggregateItemsByName(items);
+  return {
+    totalValue,
+    leafRefs,
+    leafSum,
+    coverage,
+    items,
+    aggregated,
+    debug: {
+      totalCell: `${parsed.sheetName}!${parsed.cellRef}`,
+      formula: totalFormula,
+      termCells,
+      leafCount: leafRefs.length,
+    },
+  };
 }
 
 
@@ -929,6 +1122,7 @@ function buildCostTableBreakdown(workbook, anchorRef, materials) {
 }
 function buildCalcSummary(workbook, anchors, materials) {
   const baseValues = {
+    weight: anchors.weightRef ? readAnchorValue(workbook, anchors.weightRef) : null,
     totalCost: anchors.totalCostRef ? readAnchorValue(workbook, anchors.totalCostRef) : null,
     dsp: anchors.dspRef ? readAnchorValue(workbook, anchors.dspRef) : null,
     edge: anchors.edgeRef ? readAnchorValue(workbook, anchors.edgeRef) : null,
@@ -950,18 +1144,23 @@ function buildCalcSummary(workbook, anchors, materials) {
   };
 
   if (anchors.dspRef) {
-    const dsp = buildCostTableBreakdown(workbook, anchors.dspRef, materials);
+    const dsp = buildChipboardBreakdown(workbook, anchors.dspRef);
     summary.breakdown.dsp = {
-      usable: dsp.rates.usable,
-      details: dsp.details,
-      leaves: dsp.leaves,
-      leafCount: dsp.debug?.leafCount ?? dsp.leaves?.length ?? 0,
-      leafSum: dsp.debug?.leafSum ?? 0,
-      totalValue: dsp.anchorValue ?? 0,
-      coverage: dsp.debug?.coverage ?? null,
+      usable: dsp.coverage !== null && dsp.coverage >= 0.95,
+      details: dsp.items,
+      aggregated: dsp.aggregated,
+      leaves: dsp.leafRefs,
+      leafCount: dsp.leafRefs?.length ?? 0,
+      leafSum: dsp.leafSum ?? 0,
+      totalValue: dsp.totalValue ?? 0,
+      coverage: dsp.coverage ?? null,
+      reason: dsp.debug?.reason || null,
     };
-    summary.rates.dsp = dsp.rates;
+    summary.rates.dsp = buildDspRates(dsp.items || []);
     summary.debug.dsp = dsp.debug;
+    if (summary.debug.dsp) {
+      console.log('[DSP] totalCell:', summary.debug.dsp.totalCell, 'formula:', summary.debug.dsp.formula, 'termCells:', summary.debug.dsp.termCells, 'leafCount:', summary.debug.dsp.leafCount);
+    }
   }
 
   if (anchors.edgeRef) {
@@ -1128,14 +1327,20 @@ function parseFurniture(sheet, mapping) {
     };
 
   const items = [];
-  for (let row = headerRow + 1; row < headerRow + 200; row += 1) {
+  let emptyRows = 0;
+  for (let row = headerRow + 1; row < headerRow + 400; row += 1) {
     const rowData = json[row - 1];
     if (!rowData) continue;
     const code = rowData[columns.code];
-    if (!code) break;
+    const name = rowData[columns.name];
+    if (!code && !name) {
+      emptyRows += 1;
+      if (emptyRows >= 5) break;
+      continue;
+    }
+    emptyRows = 0;
     const coef = parseNumericValue(rowData[columns.coef]) || 1;
     const qty = parseNumericValue(rowData[columns.qty]) || 0;
-    const name = rowData[columns.name];
     const unit = rowData[columns.unit] || 'шт';
     const origin = Number(parseNumericValue(rowData[columns.origin]));
     const price = parseNumericValue(rowData[columns.priceUpdated])
@@ -1463,6 +1668,8 @@ function parseExcelWithMapping(workbook, mapping) {
       hwRep: hwTotals.hwRep,
       total: hwTotals.hwImp + hwTotals.hwRep,
     };
+    if (!Number.isFinite(baseValues.hwImp)) baseValues.hwImp = hwTotals.hwImp;
+    if (!Number.isFinite(baseValues.hwRep)) baseValues.hwRep = hwTotals.hwRep;
   }
   const baseCostFromAnchors = baseValues.totalCost;
   const baseCost = Number.isFinite(baseCostFromAnchors)
@@ -1508,13 +1715,27 @@ function getMaterialDensity(materialName) {
   return MATERIAL_DENSITY;
 }
 
-function calculateWeight(parts) {
+function inferDensityFromSpec(spec) {
+  const baseWeight = Number(spec?.calcSummary?.baseValues?.weight);
+  if (!Number.isFinite(baseWeight) || baseWeight <= 0) return MATERIAL_DENSITY;
+  const volume = (spec?.corpus || []).reduce((sum, part) => {
+    if (!part.thickness || !part.length_mm || !part.width_mm || !part.qty) return sum;
+    const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000);
+    const thicknessM = part.thickness / 1000;
+    return sum + areaM2 * thicknessM * part.qty;
+  }, 0);
+  if (!volume) return MATERIAL_DENSITY;
+  const density = baseWeight / volume;
+  return Number.isFinite(density) && density > 0 ? density : MATERIAL_DENSITY;
+}
+
+function calculateWeight(parts, density = MATERIAL_DENSITY) {
   let totalKg = 0;
   parts.forEach((part) => {
     if (!part.thickness || !part.length_mm || !part.width_mm || !part.qty) return;
     const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000);
     const thicknessM = part.thickness / 1000;
-    totalKg += MATERIAL_DENSITY * areaM2 * thicknessM * part.qty;
+    totalKg += density * areaM2 * thicknessM * part.qty;
   });
   return Math.round(totalKg * 100) / 100;
 }
@@ -1622,7 +1843,7 @@ function getBasePriceFromSpec(spec) {
 }
 
 function renderBaseSummary(spec) {
-  const baseWeight = calculateWeight(spec.corpus);
+  const baseWeight = calculateWeight(spec.corpus, inferDensityFromSpec(spec));
   const basePrice = getBasePriceFromSpec(spec);
   document.getElementById('current-dims').textContent = formatDimensions(spec.dims);
   document.getElementById('current-weight').textContent = formatNumber(baseWeight, 'кг');
@@ -1760,13 +1981,16 @@ function renderCalcBreakdown(spec) {
   const coverage = document.getElementById('calc-coverage');
   const leafSum = document.getElementById('calc-leaf-sum');
   const totalValue = document.getElementById('calc-total');
+  const reasonBox = document.getElementById('calc-breakdown-reason');
+  const toggleSourcesBtn = document.getElementById('calc-toggle-sources');
   if (!table) return;
   table.innerHTML = '';
   const breakdown = spec.calcSummary?.breakdown?.dsp;
+  if (reasonBox) reasonBox.textContent = '';
   if (!breakdown || !breakdown.details || breakdown.details.length === 0) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
-    cell.colSpan = 4;
+    cell.colSpan = 5;
     cell.textContent = 'Разбор ДСП не найден.';
     row.appendChild(cell);
     table.appendChild(row);
@@ -1774,9 +1998,17 @@ function renderCalcBreakdown(spec) {
     if (coverage) coverage.textContent = '—';
     if (leafSum) leafSum.textContent = '—';
     if (totalValue) totalValue.textContent = '—';
+    if (reasonBox && breakdown?.reason) {
+      reasonBox.textContent = `Причина: ${breakdown.reason}`;
+    }
+    if (toggleSourcesBtn) toggleSourcesBtn.classList.add('hidden');
     return;
   }
-  const headers = ['Деталь', 'Qty', 'Area (м²)', 'Cost (₽)'];
+  if (toggleSourcesBtn) {
+    toggleSourcesBtn.classList.remove('hidden');
+    toggleSourcesBtn.textContent = state.showCalcSources ? 'Скрыть источники' : 'Показать источники';
+  }
+  const headers = ['Деталь', 'Qty', 'Area (м²)', 'Cost (₽)', 'Источники'];
   const headerRow = document.createElement('tr');
   headers.forEach((text) => {
     const th = document.createElement('th');
@@ -1787,8 +2019,17 @@ function renderCalcBreakdown(spec) {
 
   breakdown.details.forEach((detail) => {
     const tr = document.createElement('tr');
-    [detail.name, detail.qty ?? '', detail.area_m2 ? round2(detail.area_m2) : '', detail.cost ?? '']
-      .forEach((value) => {
+    const sourceText = detail.sources
+      ? `total: ${detail.sources.totalCell || '—'}; term: ${detail.sources.colTotalCell || '—'}; leaf: ${detail.sources.leafCell || '—'}`
+      : '';
+    const values = [
+      detail.name,
+      detail.qty ?? '',
+      detail.area_m2 ? round2(detail.area_m2) : '',
+      detail.cost_rub ?? detail.cost ?? '',
+      state.showCalcSources ? sourceText : '—',
+    ];
+    values.forEach((value) => {
         const td = document.createElement('td');
         td.textContent = value;
         tr.appendChild(td);
@@ -1800,6 +2041,9 @@ function renderCalcBreakdown(spec) {
   if (coverage) coverage.textContent = breakdown.coverage ? `${round2(breakdown.coverage * 100)}%` : '—';
   if (leafSum) leafSum.textContent = formatNumber(breakdown.leafSum, '₽');
   if (totalValue) totalValue.textContent = formatNumber(breakdown.totalValue, '₽');
+  if (reasonBox && breakdown.reason) {
+    reasonBox.textContent = `Причина: ${breakdown.reason}`;
+  }
 }
 
 function renderMaterialSpecOptions(spec) {
@@ -1938,7 +2182,12 @@ async function handleFileUpload(file) {
   }
   setUploadError('');
   const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: 'array', cellFormula: true, cellNF: true, cellDates: true });
+  const workbook = XLSX.read(data, {
+    type: 'array',
+    cellFormula: true,
+    cellNF: true,
+    cellText: true,
+  });
   state.workbook = workbook;
   state.activeSheet = workbook.SheetNames[0];
   const anchors = findCalcSummaryAnchors(workbook);
@@ -2041,7 +2290,7 @@ function attachEventHandlers() {
 
     if (sameDims && noOverrides) {
       const spec = state.originalSpec;
-      const weight = calculateWeight(spec.corpus);
+      const weight = calculateWeight(spec.corpus, inferDensityFromSpec(spec));
       const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
       const baseValues = spec.calcSummary?.baseValues || {};
       const baseHardwareCost = Number.isFinite(baseValues.hwImp) || Number.isFinite(baseValues.hwRep)
@@ -2124,6 +2373,16 @@ function attachEventHandlers() {
       }
     });
   });
+
+  const toggleSourcesBtn = document.getElementById('calc-toggle-sources');
+  if (toggleSourcesBtn) {
+    toggleSourcesBtn.addEventListener('click', () => {
+      state.showCalcSources = !state.showCalcSources;
+      if (state.newSpec) {
+        renderCalcBreakdown(state.newSpec);
+      }
+    });
+  }
 
   document.getElementById('save-template-btn').addEventListener('click', () => {
     const name = prompt('Название шаблона');
