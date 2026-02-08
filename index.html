@@ -246,6 +246,13 @@
           <div>Труд рабочих: <strong id="validation-labor">—</strong></div>
           <div>Прямые затраты: <strong id="validation-total">—</strong></div>
         </div>
+        <div class="validation-input">
+          <label for="final-price-input">Конечная цена</label>
+          <input type="number" id="final-price-input" placeholder="52000" min="0">
+          <div class="validation-coeff">
+            Коэф.: <strong id="price-coefficient">—</strong>
+          </div>
+        </div>
         <div id="validation-warning" class="warnings"></div>
       </div>
 
@@ -311,6 +318,10 @@
           <div>Фурнитура: <strong id="price-hardware">—</strong></div>
           <div>Прочие: <strong id="price-other">—</strong></div>
           <div>Итого: <strong id="price-total">—</strong></div>
+          <div id="price-adjusted-row" class="price-adjusted hidden">
+            Цена с коэф.: <strong id="price-total-adjusted">—</strong>
+            <span class="price-adjusted-note">коэф. <strong id="price-total-coefficient">—</strong></span>
+          </div>
         </div>
 
         <div id="warnings" class="warnings"></div>
