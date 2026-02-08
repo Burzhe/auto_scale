@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wardrobe Calculator — OrgSpace</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="header">
+    <div class="logo">
+      <svg viewBox="0 0 48 48" aria-hidden="true" focusable="false">
+        <circle cx="24" cy="24" r="22" fill="#00a86b" opacity="0.15"></circle>
+        <path d="M16 30c4 3 12 3 16-2 3-4 1-10-5-10-3 0-5 1-7 3-2-2-4-3-7-2-5 1-7 6-4 11 1 2 4 3 7 0z" fill="#00a86b"></path>
+      </svg>
+      <div>
+        <p class="logo-title">OrgSpace</p>
+        <h1>Wardrobe Calculator</h1>
+      </div>
+    </div>
+    <nav class="header-actions">
+      <button id="reset-btn" class="ghost">Новый расчёт</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="upload-screen" class="screen active">
+      <div class="card upload-card">
+        <h2>Загрузка файла</h2>
+        <p class="muted">Перетащите Excel-файл или выберите его вручную.</p>
+        <div class="drop-zone" id="drop-zone">
+          <p>Перетащите Excel сюда</p>
+          <span>или</span>
+          <label class="primary" for="file-input">Выбрать файл</label>
+          <input type="file" id="file-input" accept=".xls,.xlsx">
+        </div>
+        <div class="hint">Поддерживаются .xls и .xlsx. Расчёт происходит локально, без загрузки в интернет.</div>
+        <div id="upload-error" class="upload-error hidden" role="alert"></div>
+      </div>
+    </section>
+
+    <section id="mapping-screen" class="screen hidden">
+      <div class="toolbar">
+        <div class="template-controls">
+          <select id="template-select">
+            <option value="">Выбрать шаблон...</option>
+          </select>
+          <button id="save-template-btn" class="secondary">Сохранить шаблон</button>
+          <button id="export-template-btn" class="secondary">Экспорт шаблона</button>
+          <button id="import-template-btn" class="secondary">Импорт шаблона</button>
+          <input type="file" id="import-template-input" accept="application/json" class="hidden">
+        </div>
+        <div class="sheet-controls">
+          <label>Лист:</label>
+          <select id="sheet-select"></select>
+        </div>
+      </div>
+
+      <div class="mapping-layout">
+        <div class="preview-table-wrap">
+          <table id="preview-table"></table>
+          <div class="preview-footer">
+            <div id="cursor-indicator" class="cursor-indicator">Наведите курсор на ячейку</div>
+          </div>
+        </div>
+
+        <div class="mapping-panels">
+          <div class="panel">
+            <h3>1. Справочник материалов</h3>
+            <div class="row">
+              <label>Строка начала</label>
+              <input type="number" id="mat-start" min="1" value="8">
+              <label>Строка конца</label>
+              <input type="number" id="mat-end" min="1" value="40">
+            </div>
+            <div class="row">
+              <label>Название</label>
+              <select id="mat-name-col" data-highlight></select>
+              <label>Цена ₽/м²</label>
+              <select id="mat-price-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Отход %</label>
+              <select id="mat-waste-col" data-highlight></select>
+              <label>ID материала</label>
+              <select id="mat-id-col" data-highlight></select>
+            </div>
+            <p class="hint">Обычно ID материала в колонке F.</p>
+            <button class="secondary auto-btn" data-auto="materials">Автоопределить</button>
+          </div>
+
+          <div class="panel">
+            <h3>2. Габариты</h3>
+            <div class="row">
+              <label>Ячейка с размерами</label>
+              <input type="text" id="dims-cell" placeholder="A43" data-cell-input>
+            </div>
+            <div class="row">
+              <label>Ширина</label>
+              <input type="text" id="dims-width" placeholder="B5" data-cell-input>
+              <label>Глубина</label>
+              <input type="text" id="dims-depth" placeholder="C5" data-cell-input>
+              <label>Высота</label>
+              <input type="text" id="dims-height" placeholder="D5" data-cell-input>
+            </div>
+            <label class="checkbox">
+              <input type="checkbox" id="dims-auto">
+              Определить автоматически по задним стенкам
+            </label>
+            <button class="secondary auto-btn" data-auto="dimensions">Автоопределить</button>
+          </div>
+
+          <div class="panel">
+            <h3>3. Таблица деталей</h3>
+            <div class="row">
+              <label>Строка заголовков</label>
+              <input type="number" id="details-header" min="1" value="50">
+            </div>
+            <div class="row">
+              <label>Наименование</label>
+              <select id="details-name-col" data-highlight></select>
+              <label>Тлщн (ID)</label>
+              <select id="details-thickness-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Длина</label>
+              <select id="details-length-col" data-highlight></select>
+              <label>Ширина</label>
+              <select id="details-width-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Кол-во</label>
+              <select id="details-qty-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Строка начала</label>
+              <input type="number" id="details-start" min="1" value="51">
+              <label>Строка конца</label>
+              <input type="number" id="details-end" min="1" value="80">
+            </div>
+            <button class="secondary auto-btn" data-auto="details">Автоопределить</button>
+          </div>
+
+          <div class="panel">
+            <h3>4. Фурнитура (опционально)</h3>
+            <div class="row">
+              <label>Лист</label>
+              <select id="furniture-sheet"></select>
+            </div>
+            <div class="row">
+              <label>Строка заголовков</label>
+              <input type="number" id="furniture-header" min="1" value="7">
+            </div>
+            <div class="row">
+              <label>Код</label>
+              <select id="furniture-code-col" data-highlight></select>
+              <label>Количество</label>
+              <select id="furniture-qty-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Наименование</label>
+              <select id="furniture-name-col" data-highlight></select>
+              <label>Ед. изм</label>
+              <select id="furniture-unit-col" data-highlight></select>
+            </div>
+            <div class="row">
+              <label>Цена ₽</label>
+              <select id="furniture-price-col" data-highlight></select>
+            </div>
+            <button class="secondary auto-btn" data-auto="furniture">Автоопределить</button>
+          </div>
+
+          <div class="panel">
+            <h3>5. Базовая стоимость</h3>
+            <p class="hint">Найдено автоматически:</p>
+            <ul id="calc-summary-list" class="summary-list"></ul>
+            <div id="calc-summary-warning" class="warnings"></div>
+            <div class="row">
+              <label>Ячейка с прямыми затратами</label>
+              <input type="text" id="base-cost-cell" placeholder="B120" data-cell-input>
+            </div>
+            <p class="hint">Можно выбрать ячейку с итоговой суммой «Прямые затраты».</p>
+            <button class="secondary auto-btn" data-auto="cost">Автоопределить</button>
+            <details class="calc-overrides">
+              <summary>Ручное переопределение итогов (если не найдено)</summary>
+              <div class="row">
+                <label>Вес (кг)</label>
+                <input type="text" id="anchor-weight" placeholder="Лист!A1" data-cell-input>
+                <label>Трудоемкость</label>
+                <input type="text" id="anchor-labor-hours" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Стоимость ДСП</label>
+                <input type="text" id="anchor-dsp" placeholder="Лист!A1" data-cell-input>
+                <label>Стоимость Кромки</label>
+                <input type="text" id="anchor-edge" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Стоимость пластика</label>
+                <input type="text" id="anchor-plastic" placeholder="Лист!A1" data-cell-input>
+                <label>Стоимость ткани</label>
+                <input type="text" id="anchor-fabric" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Фурнитура имп.</label>
+                <input type="text" id="anchor-hw-imp" placeholder="Лист!A1" data-cell-input>
+                <label>Фурнитура отч.</label>
+                <input type="text" id="anchor-hw-rep" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Стоимость упаковки</label>
+                <input type="text" id="anchor-pack" placeholder="Лист!A1" data-cell-input>
+                <label>Труд рабочих</label>
+                <input type="text" id="anchor-labor" placeholder="Лист!A1" data-cell-input>
+              </div>
+              <div class="row">
+                <label>Прямые затраты</label>
+                <input type="text" id="anchor-total" placeholder="Лист!A1" data-cell-input>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+
+      <button id="proceed-btn" class="primary">Продолжить →</button>
+    </section>
+
+    <section id="results-screen" class="screen hidden">
+      <div class="toolbar">
+        <button id="back-btn" class="ghost">← Назад к настройкам</button>
+      </div>
+      <div class="card">
+        <h2>Базовые параметры</h2>
+        <div class="params">
+          <div>Габариты: <strong id="current-dims">—</strong></div>
+          <div>Вес: <strong id="current-weight">—</strong></div>
+          <div>Цена: <strong id="current-price">—</strong></div>
+        </div>
+      </div>
+
+      <div class="card" id="validation-card">
+        <h2>Проверка расчёта</h2>
+        <div class="params">
+          <div>BaseCost: <strong id="validation-base-cost">—</strong></div>
+          <div>BaseMaterialsCost: <strong id="validation-base-materials">—</strong></div>
+          <div>BaseHardwareCost: <strong id="validation-base-hardware">—</strong></div>
+          <div>BaseOther: <strong id="validation-base-other">—</strong></div>
+        </div>
+        <div id="validation-warning" class="warnings"></div>
+      </div>
+
+      <div class="card">
+        <h2>Задайте новые размеры</h2>
+        <div class="dimension-inputs">
+          <div>
+            <label>Ширина (мм)</label>
+            <input type="number" id="new-width" placeholder="3000">
+          </div>
+          <div>
+            <label>Глубина (мм)</label>
+            <input type="number" id="new-depth" placeholder="600">
+          </div>
+          <div>
+            <label>Высота (мм)</label>
+            <input type="number" id="new-height" placeholder="2800">
+          </div>
+        </div>
+        <div class="dimension-inputs">
+          <div>
+            <label>Секции (шт)</label>
+            <input type="number" id="new-sections" placeholder="Авто">
+          </div>
+          <div>
+            <label>Полки (шт)</label>
+            <input type="number" id="new-shelves" placeholder="Авто">
+          </div>
+        </div>
+        <div class="dimension-inputs">
+          <div>
+            <label>Прочие затраты: драйвер</label>
+            <select id="other-driver">
+              <option value="area">Площадь материалов</option>
+              <option value="parts">Кол-во деталей</option>
+              <option value="sections">Кол-во секций</option>
+              <option value="fixed">Фиксировано</option>
+            </select>
+          </div>
+          <label class="checkbox">
+            <input type="checkbox" id="enforce-rules">
+            Применять правила конструктива (1200/800/600)
+          </label>
+        </div>
+        <p class="hint">Оставьте пустым, чтобы применить авторасчёт. При ширине от 800&nbsp;мм добавляется минимум одна перегородка.</p>
+        <button id="calculate-btn" class="primary">✨ Рассчитать</button>
+      </div>
+
+      <div class="card hidden" id="results-card">
+        <h2>Новая спецификация</h2>
+        <div class="params">
+          <div>Габариты: <strong id="new-dims">—</strong></div>
+          <div>Вес: <strong id="new-weight">—</strong></div>
+          <div>Цена: <strong id="new-price">—</strong></div>
+        </div>
+        <div class="params">
+          <div>Секции: <strong id="structure-sections">—</strong></div>
+          <div>Перегородки: <strong id="structure-partitions">—</strong></div>
+          <div>Полки: <strong id="structure-shelves">—</strong></div>
+        </div>
+        <div class="params">
+          <div>Материалы: <strong id="price-materials">—</strong></div>
+          <div>Фурнитура: <strong id="price-hardware">—</strong></div>
+          <div>Прочие: <strong id="price-other">—</strong></div>
+          <div>Итого: <strong id="price-total">—</strong></div>
+        </div>
+
+        <div id="warnings" class="warnings"></div>
+
+        <div class="tabs">
+          <button class="tab active" data-tab="corpus">Корпус</button>
+          <button class="tab" data-tab="furniture">Фурнитура</button>
+          <button class="tab" data-tab="calc">Разбор калькуляции</button>
+        </div>
+
+        <table id="results-table"></table>
+
+        <div id="calc-breakdown" class="calc-breakdown hidden">
+          <div class="params">
+            <div>Листовых ячеек: <strong id="calc-leaf-count">—</strong></div>
+            <div>Покрытие: <strong id="calc-coverage">—</strong></div>
+            <div>Сумма leaf: <strong id="calc-leaf-sum">—</strong></div>
+            <div>Итого по калькуляции: <strong id="calc-total">—</strong></div>
+          </div>
+          <table id="calc-breakdown-table"></table>
+        </div>
+
+        <button id="export-btn" class="primary">Экспорт в Excel</button>
+
+        <details class="material-spec">
+          <summary>Спецификация материала (в разработке)</summary>
+          <div class="material-spec-body">
+            <label for="material-spec-select">Материал</label>
+            <select id="material-spec-select">
+              <option value="">Выберите материал</option>
+            </select>
+            <p class="hint">Здесь будет пересчёт в листы и длины кромок.</p>
+          </div>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <script id="worker-src" type="text/plain">
+    const MAX_SECTION_WIDTH = 1200;
+    const MAX_SHELF_SPAN = 800;
+    const MAX_FACADE_WIDTH = 600;
+    const PARTITION_THRESHOLD = 800;
+
+    function splitSections(totalWidth) {
+      const minSections = totalWidth >= PARTITION_THRESHOLD ? 2 : 1;
+      if (totalWidth <= MAX_SECTION_WIDTH && minSections === 1) {
+        return [totalWidth];
+      }
+      const requiredSections = Math.ceil(totalWidth / MAX_SECTION_WIDTH);
+      const numSections = Math.max(requiredSections, minSections);
+      const baseWidth = Math.floor(totalWidth / numSections);
+      const remainder = totalWidth - baseWidth * numSections;
+      const sections = Array(numSections).fill(baseWidth);
+      for (let i = 0; i < remainder; i += 1) {
+        sections[i] += 1;
+      }
+      return sections;
+    }
+
+    function distributeEvenly(spanWidth, count) {
+      const base = Math.floor(spanWidth / count);
+      const remainder = spanWidth - base * count;
+      const widths = Array(count).fill(base);
+      for (let i = 0; i < remainder; i += 1) {
+        widths[i] += 1;
+      }
+      return widths;
+    }
+
+    function calcSpansForSection(sectionWidth) {
+      const spansByShelf = Math.ceil(sectionWidth / MAX_SHELF_SPAN);
+      const spansByFacade = Math.ceil(sectionWidth / MAX_FACADE_WIDTH);
+      let spans = Math.max(spansByShelf, spansByFacade);
+      if (sectionWidth >= PARTITION_THRESHOLD) {
+        spans = Math.max(spans, 2);
+      }
+      return spans;
+    }
+
+    function inferPartType(name) {
+      const n = (name || '').toLowerCase();
+      if (n.includes('бок')) return 'side';
+      if (n.includes('дно') || n.includes('крыш')) return 'base';
+      if (n.includes('зад') || n.includes('двп')) return 'back';
+      if (n.includes('перегород')) return 'partition';
+      if (n.includes('фасад') || n.includes('двер')) return 'facade';
+      if (n.includes('полк')) return 'shelf';
+      if (n.includes('ящик')) return 'drawer';
+      if (n.includes('штанг')) return 'rod';
+      return 'other';
+    }
+
+    function inferSectionCount(spec) {
+      const backs = (spec.corpus || []).filter((p) => inferPartType(p.name) === 'back' && (p.qty || 0) > 0);
+      if (backs.length) {
+        const qtys = backs.map((p) => Math.round(p.qty || 0)).filter((n) => n > 0);
+        const freq = new Map();
+        qtys.forEach((n) => freq.set(n, (freq.get(n) || 0) + 1));
+        let best = 0;
+        let bestCnt = -1;
+        for (const [n, c] of freq.entries()) {
+          if (c > bestCnt) {
+            best = n;
+            bestCnt = c;
+          }
+        }
+        if (best > 0) return best;
+        return Math.max(1, Math.round(Math.max(...qtys)));
+      }
+
+      const partitionsQty = (spec.corpus || []).reduce((sum, part) => {
+        return inferPartType(part.name) === 'partition' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      if (partitionsQty > 0) {
+        return Math.max(1, Math.round(partitionsQty) + 1);
+      }
+
+      return splitSections((spec.dims && spec.dims.width) || 0).length || 1;
+    }
+
+
+
+    
+    function approxEqual(a, b, tol = 25) {
+      return Math.abs((a || 0) - (b || 0)) <= tol;
+    }
+
+    function pickTemplate(parts, fallbackNameContains = null) {
+      if (!parts || !parts.length) return null;
+      if (fallbackNameContains) {
+        const found = parts.find((p) => String(p.name || '').toLowerCase().includes(fallbackNameContains));
+        if (found) return found;
+      }
+      return parts[0];
+    }
+
+    function detectModuleWidth(spec, baseSections) {
+      const parts = spec.corpus || [];
+      const candidates = [];
+
+      // Prefer shelves/base parts (length ~ module width)
+      parts.forEach((p) => {
+        const t = inferPartType(p.name);
+        if ((t === 'shelf' || t === 'base') && p.length_mm && p.length_mm > 300 && p.length_mm < 1400) {
+          candidates.push(Math.round(p.length_mm));
+        }
+      });
+
+      // Then backs (width ~ module width)
+      parts.forEach((p) => {
+        const t = inferPartType(p.name);
+        if (t === 'back' && p.width_mm && p.width_mm > 300 && p.width_mm < 1400) {
+          candidates.push(Math.round(p.width_mm));
+        }
+      });
+
+      if (candidates.length) {
+        const freq = new Map();
+        candidates.forEach((n) => freq.set(n, (freq.get(n) || 0) + 1));
+        let best = candidates[0];
+        let bestCnt = -1;
+        for (const [n, c] of freq.entries()) {
+          if (c > bestCnt) {
+            best = n;
+            bestCnt = c;
+          }
+        }
+        return best;
+      }
+
+      const w = (spec.dims && spec.dims.width) || 0;
+      const s = baseSections || 1;
+      return Math.round(w / s) || 0;
+    }
+
+    function detectFacadeTiers(facadeParts) {
+      const tiers = new Map(); // height -> {template, qty}
+      (facadeParts || []).forEach((p) => {
+        const h = Math.round(p.length_mm || 0);
+        if (!h) return;
+        const entry = tiers.get(h) || { template: p, qty: 0 };
+        entry.qty += p.qty || 0;
+        // prefer the row with larger qty as template
+        if ((p.qty || 0) > (entry.template.qty || 0)) entry.template = p;
+        tiers.set(h, entry);
+      });
+
+      const arr = Array.from(tiers.entries())
+        .map(([h, v]) => ({ height: h, template: v.template, qty: v.qty }))
+        .sort((a, b) => b.height - a.height);
+
+      return arr;
+    }
+
+    function detectPlinthHeight(spec, tierHeights) {
+      const parts = spec.corpus || [];
+      const plinth = parts.find((p) => String(p.name || '').toLowerCase().includes('цокол'));
+      if (plinth && plinth.width_mm) return Math.round(plinth.width_mm);
+
+      const baseH = (spec.dims && spec.dims.height) || 0;
+      const sumTiers = (tierHeights || []).reduce((s, h) => s + (h || 0), 0);
+      const diff = baseH - sumTiers;
+      if (diff > 0 && diff < 400) return Math.round(diff);
+      return 0;
+    }
+
+    function scaleTierHeights(baseTiers, baseHeight, newHeight, basePlinth) {
+      const tiers = (baseTiers || []).filter((n) => n > 0);
+      if (!tiers.length) return { plinth: Math.max(0, Math.round(newHeight || 0)), tiers: [] };
+
+      const baseTiersSum = tiers.reduce((s, n) => s + n, 0);
+      const basePl = Math.max(0, Math.round(basePlinth || 0));
+      const baseH = Math.max(0, Math.round(baseHeight || 0));
+
+      // Keep plinth constant where possible
+      let pl = basePl;
+      if (newHeight < basePl + 200) {
+        // When сильно уменьшаем высоту, плавно уменьшаем и цоколь
+        pl = Math.max(0, Math.round((basePl / (baseH || 1)) * newHeight));
+      }
+
+      const available = Math.max(0, Math.round(newHeight - pl));
+      const k = available / (baseTiersSum || 1);
+      const scaled = tiers.map((h) => Math.max(1, Math.round(h * k)));
+
+      // Fix rounding drift on last tier
+      const sumScaled = scaled.reduce((s, n) => s + n, 0);
+      if (scaled.length) scaled[scaled.length - 1] += available - sumScaled;
+
+      return { plinth: pl, tiers: scaled };
+    }
+
+    function groupAdd(map, key, inc) {
+      map.set(key, (map.get(key) || 0) + inc);
+    }
+
+    function clonePart(template, overrides) {
+      const base = {
+        name: template.name || '',
+        material_id: template.material_id || '',
+        material: template.material || '',
+        thickness: template.thickness || 16,
+        length_mm: template.length_mm || 0,
+        width_mm: template.width_mm || 0,
+        qty: template.qty || 0,
+      };
+      return Object.assign(base, overrides);
+    }
+
+    function recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides = {}, enforceRules = true) {
+      const baseWidth = (spec.dims && spec.dims.width) || 0;
+      const baseDepth = (spec.dims && spec.dims.depth) || 0;
+      const baseHeight = (spec.dims && spec.dims.height) || 0;
+
+      const baseSections = inferSectionCount(spec);
+
+      // Sections
+      const requiredSections = Math.ceil(newWidth / MAX_SECTION_WIDTH);
+      const minSections = newWidth >= PARTITION_THRESHOLD ? 2 : 1;
+      let sections = enforceRules ? Math.max(baseSections, requiredSections, minSections) : baseSections;
+      if (overrides.sections !== undefined && overrides.sections !== null && overrides.sections !== '') {
+        sections = Math.max(1, Math.round(overrides.sections));
+      }
+
+      const moduleWidths = distributeEvenly(newWidth, sections);
+
+      const parts = spec.corpus || [];
+      const shelvesBase = parts.filter((p) => inferPartType(p.name) === 'shelf');
+      const facadesBase = parts.filter((p) => inferPartType(p.name) === 'facade');
+      const backsBase = parts.filter((p) => inferPartType(p.name) === 'back');
+      const sidesBase = parts.filter((p) => inferPartType(p.name) === 'side');
+      const basesBase = parts.filter((p) => inferPartType(p.name) === 'base');
+      const plinthBase = parts.filter((p) => String(p.name || '').toLowerCase().includes('цокол'));
+
+      const shelfTpl = pickTemplate(shelvesBase);
+      const baseTpls = basesBase.length ? basesBase : [];
+      const backTpls = backsBase.length ? backsBase : [];
+      const sideTpls = sidesBase.length ? sidesBase : [];
+      const plinthTpl = pickTemplate(plinthBase);
+
+      const facadeTiersBase = detectFacadeTiers(facadesBase);
+      const baseTierHeights = facadeTiersBase.length ? facadeTiersBase.map((t) => t.height) : (sideTpls.length ? Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values()).filter((n) => n > 0).sort((a, b) => b - a) : []);
+      const basePlinth = detectPlinthHeight(spec, baseTierHeights);
+      const scaled = scaleTierHeights(baseTierHeights, baseHeight, newHeight, basePlinth);
+      const newTierHeights = scaled.tiers;
+      const plinthHeight = scaled.plinth;
+
+      const baseModuleWidth = detectModuleWidth(spec, baseSections);
+
+      // Shelves total and per-module distribution
+      const shelvesTotalBase = shelvesBase.reduce((s, p) => s + (p.qty || 0), 0);
+      const baseShelvesPerModule = baseSections ? shelvesTotalBase / baseSections : 0;
+      let shelvesTotal = shelvesTotalBase;
+      if (overrides.shelves !== undefined && overrides.shelves !== null && overrides.shelves !== '') {
+        shelvesTotal = Math.max(0, Math.round(overrides.shelves));
+      } else if (baseShelvesPerModule) {
+        shelvesTotal = Math.max(0, Math.round(baseShelvesPerModule * sections));
+      }
+      const shelvesPerModule = distributeEvenly(shelvesTotal, sections);
+
+      // Facades: preserve tiers and increase door count only if needed
+      const baseDoorsPerModule = facadeTiersBase.length && baseSections ? Math.max(1, Math.round(Math.max(...facadeTiersBase.map((t) => t.qty)) / baseSections)) : 0;
+      const baseDoorWidth = facadeTiersBase.length ? Math.round(facadeTiersBase[0].template.width_mm || 0) : 0;
+      const baseGap = baseDoorsPerModule && baseDoorWidth ? Math.max(0, Math.round(baseModuleWidth - baseDoorWidth * baseDoorsPerModule)) : 0;
+      const gap = Math.min(Math.max(baseGap, 0), 30);
+
+      let doorsPerModule = baseDoorsPerModule || 1;
+      if (enforceRules) {
+        moduleWidths.forEach((mw) => {
+          const available = Math.max(0, mw - gap);
+          const needed = Math.ceil(available / MAX_FACADE_WIDTH);
+          if (needed > doorsPerModule) doorsPerModule = needed;
+        });
+      }
+
+      const newParts = [];
+
+      // 1) Shelves
+      if (shelfTpl) {
+        const map = new Map(); // moduleWidth -> total shelves in those modules
+        moduleWidths.forEach((mw, i) => groupAdd(map, mw, shelvesPerModule[i] || 0));
+        for (const [mw, qty] of map.entries()) {
+          if (!qty) continue;
+          newParts.push(clonePart(shelfTpl, { length_mm: mw, width_mm: newDepth, qty }));
+        }
+      }
+
+      // 2) Base / top-bottom / horizontals (anything in base type)
+      baseTpls.forEach((tpl) => {
+        const perModule = baseSections && tpl.qty ? tpl.qty / baseSections : tpl.qty || 0;
+        const isModuleSized = approxEqual(tpl.length_mm, baseModuleWidth, 60);
+        const widthScaled = approxEqual(tpl.width_mm, baseDepth, 60) ? newDepth : tpl.width_mm;
+
+        if (isModuleSized && perModule) {
+          const map = new Map(); // moduleWidth -> qty
+          moduleWidths.forEach((mw) => groupAdd(map, mw, perModule));
+          for (const [mw, qty] of map.entries()) {
+            if (!qty) continue;
+            newParts.push(clonePart(tpl, { length_mm: mw, width_mm: widthScaled, qty: Math.round(qty) }));
+          }
+        } else {
+          // fallback: proportional scaling for single pieces
+          const scaleW = baseWidth ? newWidth / baseWidth : 1;
+          newParts.push(clonePart(tpl, {
+            length_mm: Math.round((tpl.length_mm || 0) * scaleW),
+            width_mm: widthScaled,
+            qty: tpl.qty || 0,
+          }));
+        }
+      });
+
+      // 3) Plinth (цоколь)
+      if (plinthTpl) {
+        const perModule = baseSections && plinthTpl.qty ? plinthTpl.qty / baseSections : 1;
+        const map = new Map();
+        moduleWidths.forEach((mw) => groupAdd(map, mw, perModule));
+        for (const [mw, qty] of map.entries()) {
+          newParts.push(clonePart(plinthTpl, { length_mm: mw, width_mm: plinthHeight, qty: Math.round(qty) }));
+        }
+      }
+
+      // 4) Side panels (match by tier height)
+      if (sideTpls.length && newTierHeights.length) {
+        const baseHeights = Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values()).filter((n) => n > 0).sort((a, b) => b - a);
+        baseHeights.forEach((bh, idx) => {
+          const tpl = sideTpls.find((p) => Math.round(p.length_mm || 0) === bh) || sideTpls[0];
+          const perModule = baseSections && tpl.qty ? tpl.qty / baseSections : 2;
+          const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
+          newParts.push(clonePart(tpl, { length_mm: h, width_mm: newDepth, qty: Math.round(perModule * sections) }));
+        });
+      }
+
+      // 5) Back panels (match tiers if possible, width = module width)
+      if (backTpls.length && newTierHeights.length) {
+        const baseHeights = Array.from(new Set(backTpls.map((p) => Math.round(p.length_mm || 0))).values()).filter((n) => n > 0).sort((a, b) => b - a);
+        baseHeights.forEach((bh, idx) => {
+          const tpl = backTpls.find((p) => Math.round(p.length_mm || 0) === bh) || backTpls[0];
+          const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
+          const map = new Map();
+          moduleWidths.forEach((mw) => groupAdd(map, mw, 1));
+          for (const [mw, qty] of map.entries()) {
+            newParts.push(clonePart(tpl, { length_mm: h, width_mm: mw, qty: Math.round(qty) }));
+          }
+        });
+      }
+
+      // 6) Facades (tiers preserved)
+      if (facadeTiersBase.length && newTierHeights.length) {
+        facadeTiersBase.forEach((tier, idx) => {
+          const tpl = tier.template;
+          const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
+          const map = new Map(); // doorWidth -> qty
+          moduleWidths.forEach((mw) => {
+            const available = Math.max(0, mw - gap);
+            const doorWidths = distributeEvenly(available, doorsPerModule);
+            doorWidths.forEach((dw) => groupAdd(map, dw, 1));
+          });
+
+          for (const [dw, qty] of map.entries()) {
+            const name = tpl.name || `фасад${idx + 1}`;
+            newParts.push(clonePart(tpl, { name, length_mm: h, width_mm: dw, qty: Math.round(qty) }));
+          }
+        });
+      }
+
+      // 7) Other parts - keep, but update depth-aligned pieces
+      const regenerated = new Set(['shelf', 'facade', 'back', 'side', 'base']);
+      parts.forEach((p) => {
+        const t = inferPartType(p.name);
+        if (regenerated.has(t)) return;
+        if (String(p.name || '').toLowerCase().includes('цокол')) return; // already regenerated
+
+        const widthScaled = approxEqual(p.width_mm, baseDepth, 60) ? newDepth : p.width_mm;
+        const lengthScaled = approxEqual(p.length_mm, baseDepth, 60) ? newDepth : p.length_mm; // safety
+        newParts.push(Object.assign({}, p, { width_mm: widthScaled, length_mm: lengthScaled }));
+      });
+
+      return newParts;
+    }
+
+function calculateDspCostFromRates(parts, rateInfo) {
+      if (!rateInfo || !rateInfo.avgRate) return null;
+      let total = 0;
+      parts.forEach((part) => {
+        const areaM2 = calculatePartArea(part);
+        if (!areaM2) return;
+        const thicknessKey = part.thickness ? String(part.thickness) : null;
+        const rate = thicknessKey && rateInfo.byThickness?.[thicknessKey]
+          ? rateInfo.byThickness[thicknessKey]
+          : rateInfo.avgRate;
+        total += areaM2 * rate;
+      });
+      return total;
+    }
+
+    function sumPartsQty(parts) {
+      return parts.reduce((sum, part) => sum + (Number(part.qty || 0) || 0), 0);
+    }
+
+    function round2(value) {
+      return Math.round(value * 100) / 100;
+    }
+
+    self.onmessage = (event) => {
+      const { type, payload } = event.data;
+      if (type === 'calculate') {
+        const { spec, newWidth, newDepth, newHeight, overrides, enforceRules, otherDriver } = payload;
+        const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides, enforceRules);
+        const furnitureResult = recalculateFurniture(spec, corpusResult, newHeight);
+        const updatedSpec = {
+          ...spec,
+          corpus: corpusResult.corpus,
+          furniture: furnitureResult.furniture,
+          dims: { width: newWidth, depth: newDepth, height: newHeight },
+        };
+        const weight = calculateWeight(updatedSpec.corpus);
+        const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
+        const baseHardwareCostFallback = calculateFurnitureCost(spec.furniture || []);
+        const calcSummary = spec.calcSummary || {};
+        const baseValues = calcSummary.baseValues || {};
+        const baseDspCost = Number.isFinite(baseValues.dsp) ? baseValues.dsp : baseMaterialsCost;
+        const baseEdgeCost = Number.isFinite(baseValues.edge) ? baseValues.edge : 0;
+        const basePlasticCost = Number.isFinite(baseValues.plastic) ? baseValues.plastic : 0;
+        const baseFabricCost = Number.isFinite(baseValues.fabric) ? baseValues.fabric : 0;
+        const basePackCost = Number.isFinite(baseValues.pack) ? baseValues.pack : 0;
+        const baseLaborCost = Number.isFinite(baseValues.labor) ? baseValues.labor : 0;
+        const baseHardwareCost = Number.isFinite(baseValues.hwImp) || Number.isFinite(baseValues.hwRep)
+          ? (Number(baseValues.hwImp || 0) + Number(baseValues.hwRep || 0))
+          : baseHardwareCostFallback;
+        const baseTotalCost = Number.isFinite(baseValues.totalCost)
+          ? baseValues.totalCost
+          : (spec.baseCost ?? (baseDspCost + baseEdgeCost + basePlasticCost + baseFabricCost + baseHardwareCost));
+
+        const newMaterialsFallback = calculatePrice(updatedSpec.corpus, spec.materials || {});
+        const rateInfo = calcSummary.rates?.dsp;
+        const canUseRates = Boolean(calcSummary.breakdown?.dsp?.usable && rateInfo?.avgRate);
+        const newDspCost = canUseRates ? calculateDspCostFromRates(updatedSpec.corpus, rateInfo) : newMaterialsFallback;
+        const baseDspForRatio = baseDspCost > 0 ? baseDspCost : baseMaterialsCost;
+        const areaRatio = baseDspForRatio > 0 ? newDspCost / baseDspForRatio : 1;
+
+        const baseParts = sumPartsQty(spec.corpus || []);
+        const newParts = sumPartsQty(updatedSpec.corpus || []);
+        const baseSections = inferSectionCount(spec);
+        const newSections = corpusResult.sectionCount || baseSections || 1;
+        const partsRatio = baseParts > 0 ? newParts / baseParts : 1;
+        const sectionsRatio = baseSections > 0 ? newSections / baseSections : 1;
+
+        const edgeRatio = areaRatio || partsRatio;
+        const newEdgeCost = baseEdgeCost * edgeRatio;
+        const newPlasticCost = basePlasticCost * areaRatio;
+        const newFabricCost = baseFabricCost * areaRatio;
+        const newHardwareCost = baseHardwareCost * sectionsRatio;
+        const newPackCost = basePackCost * partsRatio;
+        const newLaborCost = baseLaborCost * sectionsRatio;
+
+        const recognizedBase = baseDspCost + baseEdgeCost + basePlasticCost + baseFabricCost
+          + baseHardwareCost + basePackCost + baseLaborCost;
+        const otherDelta = baseTotalCost - recognizedBase;
+
+        const price = round2(newDspCost + newEdgeCost + newPlasticCost + newFabricCost
+          + newHardwareCost + newPackCost + newLaborCost + otherDelta);
+        const extraWarnings = [];
+        if (newHeight > 2500) {
+          extraWarnings.push('⚠️ Устойчивость: добавить антиопрокидывание');
+        }
+        self.postMessage({
+          type: 'result',
+          payload: {
+            spec: updatedSpec,
+            warnings: [...corpusResult.warnings, ...furnitureResult.warnings, ...extraWarnings],
+            weight,
+            price,
+            breakdown: {
+              materials: round2(newDspCost + newEdgeCost + newPlasticCost + newFabricCost),
+              hardware: round2(newHardwareCost),
+              other: round2(price - (newDspCost + newEdgeCost + newPlasticCost + newFabricCost + newHardwareCost)),
+              total: price,
+            },
+            structure: {
+              sections: corpusResult.sectionCount,
+              shelves: corpusResult.totalShelves,
+              partitions: corpusResult.partitionCount,
+            },
+          },
+        });
+      }
+    };
+  </script>
+
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
