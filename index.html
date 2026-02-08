@@ -112,33 +112,46 @@
 
           <div class="panel">
             <h3>3. Таблица деталей</h3>
-            <div class="row">
-              <label>Строка заголовков</label>
-              <input type="number" id="details-header" min="1" value="50">
+            <div class="details-panel-grid">
+              <div class="details-panel-form">
+                <div class="row">
+                  <label>Строка заголовков</label>
+                  <input type="number" id="details-header" min="1" value="50">
+                </div>
+                <div class="row">
+                  <label>Наименование</label>
+                  <select id="details-name-col" data-highlight></select>
+                  <label>Тлщн (ID)</label>
+                  <select id="details-thickness-col" data-highlight></select>
+                </div>
+                <div class="row">
+                  <label>Длина</label>
+                  <select id="details-length-col" data-highlight></select>
+                  <label>Ширина</label>
+                  <select id="details-width-col" data-highlight></select>
+                </div>
+                <div class="row">
+                  <label>Кол-во</label>
+                  <select id="details-qty-col" data-highlight></select>
+                </div>
+                <div class="row">
+                  <label>Строка начала</label>
+                  <input type="number" id="details-start" min="1" value="51">
+                  <label>Строка конца</label>
+                  <input type="number" id="details-end" min="1" value="80">
+                </div>
+                <button class="secondary auto-btn" data-auto="details">Автоопределить</button>
+              </div>
+              <div class="details-panel-image">
+                <div class="details-image-header">
+                  <span>Изображение из файла</span>
+                  <span id="details-image-caption" class="details-image-caption"></span>
+                </div>
+                <div id="details-image-preview" class="details-image-preview">
+                  <p class="muted">В файле нет изображений</p>
+                </div>
+              </div>
             </div>
-            <div class="row">
-              <label>Наименование</label>
-              <select id="details-name-col" data-highlight></select>
-              <label>Тлщн (ID)</label>
-              <select id="details-thickness-col" data-highlight></select>
-            </div>
-            <div class="row">
-              <label>Длина</label>
-              <select id="details-length-col" data-highlight></select>
-              <label>Ширина</label>
-              <select id="details-width-col" data-highlight></select>
-            </div>
-            <div class="row">
-              <label>Кол-во</label>
-              <select id="details-qty-col" data-highlight></select>
-            </div>
-            <div class="row">
-              <label>Строка начала</label>
-              <input type="number" id="details-start" min="1" value="51">
-              <label>Строка конца</label>
-              <input type="number" id="details-end" min="1" value="80">
-            </div>
-            <button class="secondary auto-btn" data-auto="details">Автоопределить</button>
           </div>
 
           <div class="panel">
@@ -1109,6 +1122,7 @@ function calculateDspCostFromRates(parts, rateInfo) {
     };
   </script>
 
+  <script src="vendor/jszip.min.js"></script>
   <script src="vendor/xlsx.full.min.js"></script>
   <script src="app-utils.js"></script>
   <script src="app-scaling.js"></script>
