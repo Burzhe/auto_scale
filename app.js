@@ -187,13 +187,20 @@ function applyMappingToUI(mapping) {
   if (Number.isInteger(mapping.detailsLengthCol)) document.getElementById('details-length-col').value = colIndexToLetter(mapping.detailsLengthCol);
   if (Number.isInteger(mapping.detailsWidthCol)) document.getElementById('details-width-col').value = colIndexToLetter(mapping.detailsWidthCol);
   if (Number.isInteger(mapping.detailsQtyCol)) document.getElementById('details-qty-col').value = colIndexToLetter(mapping.detailsQtyCol);
-  if (mapping.furnitureSheet !== undefined) document.getElementById('furniture-sheet').value = mapping.furnitureSheet;
-  if (mapping.furnitureHeaderRow) document.getElementById('furniture-header').value = mapping.furnitureHeaderRow;
-  if (Number.isInteger(mapping.furnitureCodeCol)) document.getElementById('furniture-code-col').value = colIndexToLetter(mapping.furnitureCodeCol);
-  if (Number.isInteger(mapping.furnitureQtyCol)) document.getElementById('furniture-qty-col').value = colIndexToLetter(mapping.furnitureQtyCol);
-  if (Number.isInteger(mapping.furnitureNameCol)) document.getElementById('furniture-name-col').value = colIndexToLetter(mapping.furnitureNameCol);
-  if (Number.isInteger(mapping.furnitureUnitCol)) document.getElementById('furniture-unit-col').value = colIndexToLetter(mapping.furnitureUnitCol);
-  if (Number.isInteger(mapping.furniturePriceCol)) document.getElementById('furniture-price-col').value = colIndexToLetter(mapping.furniturePriceCol);
+  const furnitureSheetEl = document.getElementById('furniture-sheet');
+  if (furnitureSheetEl && mapping.furnitureSheet !== undefined) furnitureSheetEl.value = mapping.furnitureSheet;
+  const furnitureHeaderEl = document.getElementById('furniture-header');
+  if (furnitureHeaderEl && mapping.furnitureHeaderRow) furnitureHeaderEl.value = mapping.furnitureHeaderRow;
+  const furnitureCodeEl = document.getElementById('furniture-code-col');
+  if (furnitureCodeEl && Number.isInteger(mapping.furnitureCodeCol)) furnitureCodeEl.value = colIndexToLetter(mapping.furnitureCodeCol);
+  const furnitureQtyEl = document.getElementById('furniture-qty-col');
+  if (furnitureQtyEl && Number.isInteger(mapping.furnitureQtyCol)) furnitureQtyEl.value = colIndexToLetter(mapping.furnitureQtyCol);
+  const furnitureNameEl = document.getElementById('furniture-name-col');
+  if (furnitureNameEl && Number.isInteger(mapping.furnitureNameCol)) furnitureNameEl.value = colIndexToLetter(mapping.furnitureNameCol);
+  const furnitureUnitEl = document.getElementById('furniture-unit-col');
+  if (furnitureUnitEl && Number.isInteger(mapping.furnitureUnitCol)) furnitureUnitEl.value = colIndexToLetter(mapping.furnitureUnitCol);
+  const furniturePriceEl = document.getElementById('furniture-price-col');
+  if (furniturePriceEl && Number.isInteger(mapping.furniturePriceCol)) furniturePriceEl.value = colIndexToLetter(mapping.furniturePriceCol);
   if (mapping.baseCostCell) document.getElementById('base-cost-cell').value = normalizeCellRef(mapping.baseCostCell);
   if (mapping.anchorOverrides) {
     const overrides = mapping.anchorOverrides;
@@ -297,7 +304,7 @@ function renderCalcSummaryAnchors(anchors) {
 }
 
 function collectMapping() {
-  return {
+  const mapping = {
     materialDictStart: Number(document.getElementById('mat-start').value),
     materialDictEnd: Number(document.getElementById('mat-end').value),
     materialNameCol: letterToColIndex(document.getElementById('mat-name-col').value),
@@ -316,13 +323,6 @@ function collectMapping() {
     detailsLengthCol: letterToColIndex(document.getElementById('details-length-col').value),
     detailsWidthCol: letterToColIndex(document.getElementById('details-width-col').value),
     detailsQtyCol: letterToColIndex(document.getElementById('details-qty-col').value),
-    furnitureSheet: document.getElementById('furniture-sheet').value,
-    furnitureHeaderRow: Number(document.getElementById('furniture-header').value),
-    furnitureCodeCol: letterToColIndex(document.getElementById('furniture-code-col').value),
-    furnitureQtyCol: letterToColIndex(document.getElementById('furniture-qty-col').value),
-    furnitureNameCol: letterToColIndex(document.getElementById('furniture-name-col').value),
-    furnitureUnitCol: letterToColIndex(document.getElementById('furniture-unit-col').value),
-    furniturePriceCol: letterToColIndex(document.getElementById('furniture-price-col').value),
     baseCostCell: normalizeCellRef(document.getElementById('base-cost-cell').value),
     anchorOverrides: {
       weightRef: normalizeAnchorRef(document.getElementById('anchor-weight').value),
@@ -338,6 +338,37 @@ function collectMapping() {
       totalCostRef: normalizeAnchorRef(document.getElementById('anchor-total').value),
     },
   };
+
+  const furnitureSheetEl = document.getElementById('furniture-sheet');
+  if (furnitureSheetEl) {
+    mapping.furnitureSheet = furnitureSheetEl.value;
+  }
+  const furnitureHeaderEl = document.getElementById('furniture-header');
+  if (furnitureHeaderEl) {
+    mapping.furnitureHeaderRow = Number(furnitureHeaderEl.value);
+  }
+  const furnitureCodeEl = document.getElementById('furniture-code-col');
+  if (furnitureCodeEl) {
+    mapping.furnitureCodeCol = letterToColIndex(furnitureCodeEl.value);
+  }
+  const furnitureQtyEl = document.getElementById('furniture-qty-col');
+  if (furnitureQtyEl) {
+    mapping.furnitureQtyCol = letterToColIndex(furnitureQtyEl.value);
+  }
+  const furnitureNameEl = document.getElementById('furniture-name-col');
+  if (furnitureNameEl) {
+    mapping.furnitureNameCol = letterToColIndex(furnitureNameEl.value);
+  }
+  const furnitureUnitEl = document.getElementById('furniture-unit-col');
+  if (furnitureUnitEl) {
+    mapping.furnitureUnitCol = letterToColIndex(furnitureUnitEl.value);
+  }
+  const furniturePriceEl = document.getElementById('furniture-price-col');
+  if (furniturePriceEl) {
+    mapping.furniturePriceCol = letterToColIndex(furniturePriceEl.value);
+  }
+
+  return mapping;
 }
 
 function formatNumber(value, unit = '') {
@@ -658,7 +689,9 @@ function updateMappingFromAuto(type) {
     });
   }
   if (type === 'furniture') {
-    const selectedSheet = document.getElementById('furniture-sheet').value || state.activeSheet;
+    const furnitureSheetEl = document.getElementById('furniture-sheet');
+    if (!furnitureSheetEl) return;
+    const selectedSheet = furnitureSheetEl.value || state.activeSheet;
     const furnitureSheet = state.workbook.Sheets[selectedSheet];
     const furnitureMapping = autoDetectFurnitureMapping(furnitureSheet);
     if (!furnitureMapping || Object.keys(furnitureMapping).length === 0) {
@@ -719,14 +752,16 @@ function renderSheetOptions() {
   const sheetSelect = document.getElementById('sheet-select');
   const furnitureSelect = document.getElementById('furniture-sheet');
   sheetSelect.innerHTML = '';
-  furnitureSelect.innerHTML = '<option value="">—</option>';
+  if (furnitureSelect) furnitureSelect.innerHTML = '<option value="">—</option>';
   state.workbook.SheetNames.forEach((name) => {
     const option = document.createElement('option');
     option.value = name;
     option.textContent = name;
     sheetSelect.appendChild(option);
-    const furnitureOption = option.cloneNode(true);
-    furnitureSelect.appendChild(furnitureOption);
+    if (furnitureSelect) {
+      const furnitureOption = option.cloneNode(true);
+      furnitureSelect.appendChild(furnitureOption);
+    }
   });
   sheetSelect.value = state.activeSheet;
 }
