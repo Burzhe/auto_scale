@@ -862,6 +862,11 @@
         return inferPartType(part.name) === 'drawer' ? sum + (part.qty || 0) : sum;
       }, 0);
       const handlesDrawerQty = oldDrawers ? Math.ceil(oldDrawers * sectionRatio) : 0;
+      const handleItems = baseFurniture.filter((item) => String(item.name || '').toLowerCase().includes('ручк'));
+      const baseHandlesTotal = handleItems.reduce((sum, item) => sum + Number(item.qty || 0), 0);
+      const baseHandlesForFacades = Math.max(baseHandlesTotal - oldDrawers, 0);
+      const handleFacadeRatio = oldFacades > 0 ? baseHandlesForFacades / oldFacades : 0;
+      let handleFacadeRatioWarningAdded = false;
 
       let totalLedPower = 0;
       let totalLedLength = 0;
@@ -888,10 +893,21 @@
             if (nameLow.includes('петл') || nameLow.includes('чашк') || (nameLow.includes('заглушка') && nameLow.includes('петл'))) {
               newQty = newFacades * petals;
             } else if (nameLow.includes('ручк')) {
-              newQty = newFacades + handlesDrawerQty;
+              const handlesForFacades = handleFacadeRatio > 0 ? newFacades * handleFacadeRatio : 0;
+              const totalHandles = handlesForFacades + handlesDrawerQty;
+              if (baseHandlesTotal > 0) {
+                const share = baseQty / baseHandlesTotal;
+                newQty = totalHandles * share;
+              } else {
+                newQty = totalHandles;
+              }
               if (oldDrawers && handlesDrawerQty && !handleDrawerWarningAdded) {
                 warnings.push(`ℹ️ Ручки: учтены ящики ${oldDrawers}→${handlesDrawerQty} (коэф. секций ${sectionRatio.toFixed(2)})`);
                 handleDrawerWarningAdded = true;
+              }
+              if (oldFacades && baseHandlesForFacades > 0 && !handleFacadeRatioWarningAdded && Math.abs(handleFacadeRatio - 1) > 0.01) {
+                warnings.push(`ℹ️ Ручки: доля на фасады ${Math.round(handleFacadeRatio * 100)}% (фасады ${oldFacades}→${newFacades})`);
+                handleFacadeRatioWarningAdded = true;
               }
             } else if (nameLow.includes('полкодерж')) {
               if (oldShelves > 0 && newShelves > 0) {
