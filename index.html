@@ -433,6 +433,22 @@
     }
 
 
+    function mode(values) {
+      const freq = new Map();
+      values.forEach((v) => {
+        if (!Number.isFinite(v)) return;
+        freq.set(v, (freq.get(v) || 0) + 1);
+      });
+      let best = null;
+      let bestCount = -1;
+      for (const [value, count] of freq.entries()) {
+        if (count > bestCount) {
+          best = value;
+          bestCount = count;
+        }
+      }
+      return best;
+    }
 
     
     function approxEqual(a, b, tol = 25) {
@@ -509,7 +525,13 @@
     function detectPlinthHeight(spec, tierHeights) {
       const parts = spec.corpus || [];
       const plinth = parts.find((p) => String(p.name || '').toLowerCase().includes('цокол'));
-      if (plinth && plinth.width_mm) return Math.round(plinth.width_mm);
+      if (plinth) {
+        const candidates = [plinth.length_mm, plinth.width_mm].filter((v) => Number.isFinite(v) && v > 0);
+        if (candidates.length) {
+          const height = Math.min(...candidates);
+          if (height > 0 && height < 500) return Math.round(height);
+        }
+      }
 
       const baseH = (spec.dims && spec.dims.height) || 0;
       const sumTiers = (tierHeights || []).reduce((s, h) => s + (h || 0), 0);
@@ -526,14 +548,9 @@
       const basePl = Math.max(0, Math.round(basePlinth || 0));
       const baseH = Math.max(0, Math.round(baseHeight || 0));
 
-      // Keep plinth constant where possible
-      let pl = basePl;
-      if (newHeight < basePl + 200) {
-        // When сильно уменьшаем высоту, плавно уменьшаем и цоколь
-        pl = Math.max(0, Math.round((basePl / (baseH || 1)) * newHeight));
-      }
-
-      const available = Math.max(0, Math.round(newHeight - pl));
+      const baseClearance = Math.max(0, Math.round(baseH - baseTiersSum - basePl));
+      const pl = basePl;
+      const available = Math.max(0, Math.round(baseClearance > 0 ? (newHeight - baseClearance) : newHeight));
       const k = available / (baseTiersSum || 1);
       const scaled = tiers.map((h) => Math.max(1, Math.round(h * k)));
 
@@ -567,16 +584,18 @@
       const baseHeight = (spec.dims && spec.dims.height) || 0;
 
       const baseSections = inferSectionCount(spec);
-
-      // Sections
-      const requiredSections = Math.ceil(newWidth / MAX_SECTION_WIDTH);
-      const minSections = newWidth >= PARTITION_THRESHOLD ? 2 : 1;
-      let sections = enforceRules ? Math.max(baseSections, requiredSections, minSections) : baseSections;
-      if (overrides.sections !== undefined && overrides.sections !== null && overrides.sections !== '') {
-        sections = Math.max(1, Math.round(overrides.sections));
+      const minModules = newWidth >= PARTITION_THRESHOLD ? 2 : 1;
+      let modules = enforceRules
+        ? Math.max(minModules, Math.ceil(newWidth / MAX_SECTION_WIDTH))
+        : Math.max(1, baseSections);
+      if (enforceRules) {
+        modules = Math.max(modules, Math.ceil(newWidth / MAX_SHELF_SPAN));
+      }
+      if (overrides.sectionCount !== undefined && overrides.sectionCount !== null && overrides.sectionCount !== '') {
+        modules = Math.max(1, Math.round(overrides.sectionCount));
       }
 
-      const moduleWidths = distributeEvenly(newWidth, sections);
+      const moduleWidths = distributeEvenly(newWidth, modules);
 
       const parts = spec.corpus || [];
       const shelvesBase = parts.filter((p) => inferPartType(p.name) === 'shelf');
@@ -593,45 +612,47 @@
       const plinthTpl = pickTemplate(plinthBase);
 
       const facadeTiersBase = detectFacadeTiers(facadesBase);
-      const baseTierHeights = facadeTiersBase.length ? facadeTiersBase.map((t) => t.height) : (sideTpls.length ? Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values()).filter((n) => n > 0).sort((a, b) => b - a) : []);
+      const baseTierHeights = facadeTiersBase.length
+        ? facadeTiersBase.map((t) => t.height)
+        : (sideTpls.length ? Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values())
+          .filter((n) => n > 0)
+          .sort((a, b) => b - a) : []);
       const basePlinth = detectPlinthHeight(spec, baseTierHeights);
       const scaled = scaleTierHeights(baseTierHeights, baseHeight, newHeight, basePlinth);
       const newTierHeights = scaled.tiers;
       const plinthHeight = scaled.plinth;
 
-      const baseModuleWidth = detectModuleWidth(spec, baseSections);
+      const baseModuleWidth = baseSections ? Math.round(baseWidth / baseSections) : baseWidth;
 
-      // Shelves total and per-module distribution
       const shelvesTotalBase = shelvesBase.reduce((s, p) => s + (p.qty || 0), 0);
       const baseShelvesPerModule = baseSections ? shelvesTotalBase / baseSections : 0;
       let shelvesTotal = shelvesTotalBase;
-      if (overrides.shelves !== undefined && overrides.shelves !== null && overrides.shelves !== '') {
-        shelvesTotal = Math.max(0, Math.round(overrides.shelves));
+      if (overrides.shelfCount !== undefined && overrides.shelfCount !== null && overrides.shelfCount !== '') {
+        shelvesTotal = Math.max(0, Math.round(overrides.shelfCount));
       } else if (baseShelvesPerModule) {
-        shelvesTotal = Math.max(0, Math.round(baseShelvesPerModule * sections));
+        shelvesTotal = Math.max(0, Math.round(baseShelvesPerModule * modules));
       }
-      const shelvesPerModule = distributeEvenly(shelvesTotal, sections);
+      const shelvesPerModule = distributeEvenly(shelvesTotal, modules);
 
-      // Facades: preserve tiers and increase door count only if needed
-      const baseDoorsPerModule = facadeTiersBase.length && baseSections ? Math.max(1, Math.round(Math.max(...facadeTiersBase.map((t) => t.qty)) / baseSections)) : 0;
+      const tierQtys = facadeTiersBase.map((t) => Math.round(t.qty || 0)).filter((n) => n > 0);
+      const baseDoorsPerRow = mode(tierQtys) || Math.max(1, ...tierQtys, 1);
       const baseDoorWidth = facadeTiersBase.length ? Math.round(facadeTiersBase[0].template.width_mm || 0) : 0;
-      const baseGap = baseDoorsPerModule && baseDoorWidth ? Math.max(0, Math.round(baseModuleWidth - baseDoorWidth * baseDoorsPerModule)) : 0;
-      const gap = Math.min(Math.max(baseGap, 0), 30);
+      const baseGap = baseDoorsPerRow && baseDoorWidth ? Math.max(0, Math.round(baseWidth - baseDoorWidth * baseDoorsPerRow)) : 0;
 
-      let doorsPerModule = baseDoorsPerModule || 1;
+      let doorsPerRow = baseDoorsPerRow || 1;
       if (enforceRules) {
-        moduleWidths.forEach((mw) => {
-          const available = Math.max(0, mw - gap);
-          const needed = Math.ceil(available / MAX_FACADE_WIDTH);
-          if (needed > doorsPerModule) doorsPerModule = needed;
-        });
+        const available = Math.max(0, newWidth - baseGap);
+        const needed = Math.ceil(available / MAX_FACADE_WIDTH);
+        doorsPerRow = Math.max(doorsPerRow, needed);
       }
+
+      const facadeWidth = Math.max(1, Math.round((Math.max(0, newWidth - baseGap)) / doorsPerRow));
 
       const newParts = [];
+      const warnings = [];
 
-      // 1) Shelves
       if (shelfTpl) {
-        const map = new Map(); // moduleWidth -> total shelves in those modules
+        const map = new Map();
         moduleWidths.forEach((mw, i) => groupAdd(map, mw, shelvesPerModule[i] || 0));
         for (const [mw, qty] of map.entries()) {
           if (!qty) continue;
@@ -639,21 +660,19 @@
         }
       }
 
-      // 2) Base / top-bottom / horizontals (anything in base type)
       baseTpls.forEach((tpl) => {
         const perModule = baseSections && tpl.qty ? tpl.qty / baseSections : tpl.qty || 0;
         const isModuleSized = approxEqual(tpl.length_mm, baseModuleWidth, 60);
         const widthScaled = approxEqual(tpl.width_mm, baseDepth, 60) ? newDepth : tpl.width_mm;
 
         if (isModuleSized && perModule) {
-          const map = new Map(); // moduleWidth -> qty
+          const map = new Map();
           moduleWidths.forEach((mw) => groupAdd(map, mw, perModule));
           for (const [mw, qty] of map.entries()) {
             if (!qty) continue;
             newParts.push(clonePart(tpl, { length_mm: mw, width_mm: widthScaled, qty: Math.round(qty) }));
           }
         } else {
-          // fallback: proportional scaling for single pieces
           const scaleW = baseWidth ? newWidth / baseWidth : 1;
           newParts.push(clonePart(tpl, {
             length_mm: Math.round((tpl.length_mm || 0) * scaleW),
@@ -663,30 +682,31 @@
         }
       });
 
-      // 3) Plinth (цоколь)
       if (plinthTpl) {
         const perModule = baseSections && plinthTpl.qty ? plinthTpl.qty / baseSections : 1;
         const map = new Map();
         moduleWidths.forEach((mw) => groupAdd(map, mw, perModule));
         for (const [mw, qty] of map.entries()) {
-          newParts.push(clonePart(plinthTpl, { length_mm: mw, width_mm: plinthHeight, qty: Math.round(qty) }));
+          newParts.push(clonePart(plinthTpl, { length_mm: mw, width_mm: plinthHeight || plinthTpl.width_mm, qty: Math.round(qty) }));
         }
       }
 
-      // 4) Side panels (match by tier height)
       if (sideTpls.length && newTierHeights.length) {
-        const baseHeights = Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values()).filter((n) => n > 0).sort((a, b) => b - a);
+        const baseHeights = Array.from(new Set(sideTpls.map((p) => Math.round(p.length_mm || 0))).values())
+          .filter((n) => n > 0)
+          .sort((a, b) => b - a);
         baseHeights.forEach((bh, idx) => {
           const tpl = sideTpls.find((p) => Math.round(p.length_mm || 0) === bh) || sideTpls[0];
           const perModule = baseSections && tpl.qty ? tpl.qty / baseSections : 2;
           const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
-          newParts.push(clonePart(tpl, { length_mm: h, width_mm: newDepth, qty: Math.round(perModule * sections) }));
+          newParts.push(clonePart(tpl, { length_mm: h, width_mm: newDepth, qty: Math.round(perModule * modules) }));
         });
       }
 
-      // 5) Back panels (match tiers if possible, width = module width)
       if (backTpls.length && newTierHeights.length) {
-        const baseHeights = Array.from(new Set(backTpls.map((p) => Math.round(p.length_mm || 0))).values()).filter((n) => n > 0).sort((a, b) => b - a);
+        const baseHeights = Array.from(new Set(backTpls.map((p) => Math.round(p.length_mm || 0))).values())
+          .filter((n) => n > 0)
+          .sort((a, b) => b - a);
         baseHeights.forEach((bh, idx) => {
           const tpl = backTpls.find((p) => Math.round(p.length_mm || 0) === bh) || backTpls[0];
           const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
@@ -698,38 +718,102 @@
         });
       }
 
-      // 6) Facades (tiers preserved)
       if (facadeTiersBase.length && newTierHeights.length) {
         facadeTiersBase.forEach((tier, idx) => {
           const tpl = tier.template;
           const h = newTierHeights[Math.min(idx, newTierHeights.length - 1)];
-          const map = new Map(); // doorWidth -> qty
-          moduleWidths.forEach((mw) => {
-            const available = Math.max(0, mw - gap);
-            const doorWidths = distributeEvenly(available, doorsPerModule);
-            doorWidths.forEach((dw) => groupAdd(map, dw, 1));
-          });
-
-          for (const [dw, qty] of map.entries()) {
-            const name = tpl.name || `фасад${idx + 1}`;
-            newParts.push(clonePart(tpl, { name, length_mm: h, width_mm: dw, qty: Math.round(qty) }));
-          }
+          const name = tpl.name || `фасад${idx + 1}`;
+          newParts.push(clonePart(tpl, { name, length_mm: h, width_mm: facadeWidth, qty: Math.round(doorsPerRow) }));
         });
       }
 
-      // 7) Other parts - keep, but update depth-aligned pieces
       const regenerated = new Set(['shelf', 'facade', 'back', 'side', 'base']);
       parts.forEach((p) => {
         const t = inferPartType(p.name);
         if (regenerated.has(t)) return;
-        if (String(p.name || '').toLowerCase().includes('цокол')) return; // already regenerated
+        if (String(p.name || '').toLowerCase().includes('цокол')) return;
 
         const widthScaled = approxEqual(p.width_mm, baseDepth, 60) ? newDepth : p.width_mm;
-        const lengthScaled = approxEqual(p.length_mm, baseDepth, 60) ? newDepth : p.length_mm; // safety
+        const lengthScaled = approxEqual(p.length_mm, baseDepth, 60) ? newDepth : p.length_mm;
         newParts.push(Object.assign({}, p, { width_mm: widthScaled, length_mm: lengthScaled }));
       });
 
-      return newParts;
+      return {
+        corpus: newParts,
+        warnings,
+        sectionCount: modules,
+        totalShelves: shelvesTotal,
+        partitionCount: Math.max(0, modules - 1),
+      };
+    }
+
+    function getMaterialDensity(materialName) {
+      const mat = String(materialName || '').toLowerCase();
+      if (mat.includes('лдсп') || mat.includes('дсп')) return 730;
+      if (mat.includes('мдф')) return 750;
+      if (mat.includes('фанер')) return 650;
+      if (mat.includes('двп') || mat.includes('оргалит')) return 850;
+      if (mat.includes('стекл')) return 2500;
+      return 730;
+    }
+
+    function calculatePartArea(part) {
+      if (!part.length_mm || !part.width_mm || !part.qty) return 0;
+      return (part.length_mm * part.width_mm * part.qty) / 1e6;
+    }
+
+    function calculateWeight(parts) {
+      let totalKg = 0;
+      parts.forEach((part) => {
+        if (!part.thickness || !part.length_mm || !part.width_mm || !part.qty) return;
+        const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000);
+        const thicknessM = part.thickness / 1000;
+        totalKg += 730 * areaM2 * thicknessM * part.qty;
+      });
+      return Math.round(totalKg * 100) / 100;
+    }
+
+    function calculatePrice(parts, materials) {
+      let total = 0;
+      parts.forEach((part) => {
+        if (!part.length_mm || !part.width_mm || !part.qty) return;
+        const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000) * part.qty;
+        const material = materials[part.material_id];
+        if (material) {
+          const wasteFactor = 1 + (material.waste || 0) / 100;
+          total += areaM2 * material.price * wasteFactor;
+        }
+      });
+      return Math.round(total);
+    }
+
+    function calculateFurnitureCost(furniture) {
+      return (furniture || []).reduce((sum, item) => {
+        const price = Number(item.price || 0);
+        if (!price || item.unit === '%') return sum;
+        return sum + Number(item.qty || 0) * price;
+      }, 0);
+    }
+
+    function recalculateFurniture(spec, baseValues, mapping, workbook) {
+      const furniture = Array.isArray(spec?.furniture) ? spec.furniture : [];
+      const hwImp = Number(baseValues?.hwImp || 0);
+      const hwRep = Number(baseValues?.hwRep || 0);
+
+      if (Array.isArray(furniture) && furniture.length) {
+        let imp = 0;
+        let rep = 0;
+        for (const row of furniture) {
+          const s = Number(row.sum || 0);
+          if (row.origin === 0) imp += s;
+          if (row.origin === 1) rep += s;
+        }
+        if (imp + rep > 0) {
+          return { furniture, hwImp: imp, hwRep: rep, warnings: [] };
+        }
+      }
+
+      return { furniture, hwImp, hwRep, warnings: [] };
     }
 
 function calculateDspCostFromRates(parts, rateInfo) {
@@ -760,7 +844,9 @@ function calculateDspCostFromRates(parts, rateInfo) {
       if (type === 'calculate') {
         const { spec, newWidth, newDepth, newHeight, overrides, enforceRules, otherDriver } = payload;
         const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides, enforceRules);
-        const furnitureResult = recalculateFurniture(spec, corpusResult, newHeight);
+        const calcSummary = spec.calcSummary || {};
+        const baseValues = calcSummary.baseValues || {};
+        const furnitureResult = recalculateFurniture(spec, baseValues);
         const updatedSpec = {
           ...spec,
           corpus: corpusResult.corpus,
@@ -770,8 +856,6 @@ function calculateDspCostFromRates(parts, rateInfo) {
         const weight = calculateWeight(updatedSpec.corpus);
         const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
         const baseHardwareCostFallback = calculateFurnitureCost(spec.furniture || []);
-        const calcSummary = spec.calcSummary || {};
-        const baseValues = calcSummary.baseValues || {};
         const baseDspCost = Number.isFinite(baseValues.dsp) ? baseValues.dsp : baseMaterialsCost;
         const baseEdgeCost = Number.isFinite(baseValues.edge) ? baseValues.edge : 0;
         const basePlasticCost = Number.isFinite(baseValues.plastic) ? baseValues.plastic : 0;
@@ -780,7 +864,7 @@ function calculateDspCostFromRates(parts, rateInfo) {
         const baseLaborCost = Number.isFinite(baseValues.labor) ? baseValues.labor : 0;
         const baseHardwareCost = Number.isFinite(baseValues.hwImp) || Number.isFinite(baseValues.hwRep)
           ? (Number(baseValues.hwImp || 0) + Number(baseValues.hwRep || 0))
-          : baseHardwareCostFallback;
+          : (Number(furnitureResult.hwImp || 0) + Number(furnitureResult.hwRep || 0)) || baseHardwareCostFallback;
         const baseTotalCost = Number.isFinite(baseValues.totalCost)
           ? baseValues.totalCost
           : (spec.baseCost ?? (baseDspCost + baseEdgeCost + basePlasticCost + baseFabricCost + baseHardwareCost));
