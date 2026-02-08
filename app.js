@@ -268,28 +268,25 @@ function findSummaryAnchorsInSheet(sheet, sheetName, labelMap) {
   const labelEntries = Object.entries(labelMap).sort((a, b) => b[0].length - a[0].length);
 
   for (let r = range.s.r; r <= range.e.r; r += 1) {
-    for (let c = range.s.c; c <= range.e.c; c += 1) {
-      const addr = XLSX.utils.encode_cell({ r, c });
-      const cell = sheet[addr];
-      if (!cell || cell.v == null) continue;
-      const normalized = normalizeLabelText(cell.v);
-      if (!normalized) continue;
+    const c = 0;
+    if (c < range.s.c || c > range.e.c) continue;
+    const addr = XLSX.utils.encode_cell({ r, c });
+    const cell = sheet[addr];
+    if (!cell || cell.v == null) continue;
+    const normalized = normalizeLabelText(cell.v);
+    if (!normalized) continue;
 
-      for (const [labelKey, anchorKey] of labelEntries) {
-        if (anchors[anchorKey]) continue;
-        if (normalized === labelKey || normalized.startsWith(labelKey) || normalized.includes(labelKey)) {
-          let valueRef = null;
-          for (let offset = 1; offset <= 3; offset += 1) {
-            const rightAddr = XLSX.utils.encode_cell({ r, c: c + offset });
-            const rightCell = sheet[rightAddr];
-            if (rightCell && (rightCell.v != null || rightCell.f)) {
-              valueRef = `${sheetName}!${rightAddr}`;
-              break;
-            }
-          }
-          if (valueRef) anchors[anchorKey] = valueRef;
-          break;
+    for (const [labelKey, anchorKey] of labelEntries) {
+      if (anchors[anchorKey]) continue;
+      if (normalized === labelKey || normalized.startsWith(labelKey) || normalized.includes(labelKey)) {
+        let valueRef = null;
+        const rightAddr = XLSX.utils.encode_cell({ r, c: c + 1 });
+        const rightCell = sheet[rightAddr];
+        if (rightCell && (rightCell.v != null || rightCell.f)) {
+          valueRef = `${sheetName}!${rightAddr}`;
         }
+        if (valueRef) anchors[anchorKey] = valueRef;
+        break;
       }
     }
   }
@@ -1861,16 +1858,22 @@ function renderValidationSummary(spec) {
   const baseHardwareCostFallback = calculateFurnitureCost(spec.furniture || []);
   const baseValues = spec.calcSummary?.baseValues || {};
   const baseCost = spec.baseCost;
+  const totalCost = Number.isFinite(baseValues.totalCost) ? baseValues.totalCost : baseCost;
   const baseHardwareCost = Number.isFinite(baseValues.hwImp) || Number.isFinite(baseValues.hwRep)
     ? (Number(baseValues.hwImp || 0) + Number(baseValues.hwRep || 0))
     : baseHardwareCostFallback;
   const baseOther = baseCost !== null && baseCost !== undefined
     ? baseCost - (baseMaterialsCost + baseHardwareCost)
     : null;
-  document.getElementById('validation-base-cost').textContent = formatNumber(baseCost, '₽');
-  document.getElementById('validation-base-materials').textContent = formatNumber(baseMaterialsCost, '₽');
-  document.getElementById('validation-base-hardware').textContent = formatNumber(baseHardwareCost, '₽');
-  document.getElementById('validation-base-other').textContent = formatNumber(baseOther, '₽');
+  document.getElementById('validation-dsp').textContent = formatNumber(baseValues.dsp, '₽');
+  document.getElementById('validation-edge').textContent = formatNumber(baseValues.edge, '₽');
+  document.getElementById('validation-plastic').textContent = formatNumber(baseValues.plastic, '₽');
+  document.getElementById('validation-fabric').textContent = formatNumber(baseValues.fabric, '₽');
+  document.getElementById('validation-hw-imp').textContent = formatNumber(baseValues.hwImp, '₽');
+  document.getElementById('validation-hw-rep').textContent = formatNumber(baseValues.hwRep, '₽');
+  document.getElementById('validation-pack').textContent = formatNumber(baseValues.pack, '₽');
+  document.getElementById('validation-labor').textContent = formatNumber(baseValues.labor, '₽');
+  document.getElementById('validation-total').textContent = formatNumber(totalCost, '₽');
 
   const warningBox = document.getElementById('validation-warning');
   warningBox.innerHTML = '';
