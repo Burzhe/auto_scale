@@ -11,6 +11,7 @@ const state = {
   activeResultsTab: 'corpus',
   calcSummary: null,
   showCalcSources: false,
+  sheetImages: null,
 };
 
 function resetControl(control) {
@@ -132,6 +133,7 @@ function resetMappingUI() {
 
   const mappingScreen = document.getElementById('mapping-screen');
   resetControls(mappingScreen);
+  renderSheetImagePreview(state.activeSheet);
 }
 
 function resetAppState() {
@@ -148,6 +150,7 @@ function resetAppState() {
   state.activeResultsTab = 'corpus';
   state.calcSummary = null;
   state.showCalcSources = false;
+  state.sheetImages = null;
 }
 
 function resetCalculation() {
@@ -197,6 +200,240 @@ function populateColumnSelects() {
   document.querySelectorAll('select[data-highlight]').forEach((select) => {
     select.innerHTML = COLUMN_LETTERS.map((letter) => `<option value="${letter}">${letter}</option>`).join('');
   });
+}
+
+function resolveZipPath(basePath, target) {
+  if (!target) return null;
+  const baseDir = basePath.split('/').slice(0, -1).join('/');
+  const basePrefix = baseDir ? `${baseDir}/` : '';
+  const combined = target.startsWith('/') ? target.replace(/^\/+/, '') : `${basePrefix}${target}`;
+  const parts = [];
+  combined.split('/').forEach((part) => {
+    if (!part || part === '.') return;
+    if (part === '..') {
+      parts.pop();
+      return;
+    }
+    parts.push(part);
+  });
+  return parts.join('/');
+}
+
+function parseXml(text) {
+  if (!text) return null;
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(text, 'application/xml');
+  if (doc.querySelector('parsererror')) return null;
+  return doc;
+}
+
+function parseRelationships(xmlText) {
+  const relsDoc = parseXml(xmlText);
+  if (!relsDoc) return {};
+  const rels = {};
+  relsDoc.querySelectorAll('Relationship').forEach((rel) => {
+    const id = rel.getAttribute('Id');
+    const target = rel.getAttribute('Target');
+    const type = rel.getAttribute('Type');
+    if (id) rels[id] = { target, type };
+  });
+  return rels;
+}
+
+function getImageMimeType(path) {
+  const ext = path?.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'bmp':
+      return 'image/bmp';
+    case 'tif':
+    case 'tiff':
+      return 'image/tiff';
+    case 'svg':
+      return 'image/svg+xml';
+    default:
+      return 'image/png';
+  }
+}
+
+function getAnchorArea(anchorEl) {
+  if (!anchorEl) return 0;
+  const extEl = anchorEl.querySelector('xdr\\:ext');
+  if (!extEl) return 0;
+  const cx = Number(extEl.getAttribute('cx'));
+  const cy = Number(extEl.getAttribute('cy'));
+  if (!Number.isFinite(cx) || !Number.isFinite(cy)) return 0;
+  return cx * cy;
+}
+
+function parseAnchor(anchorEl) {
+  if (!anchorEl) return { cellRef: null, area: 0, type: 'unknown' };
+  const anchorType = anchorEl.localName;
+  if (anchorType === 'twoCellAnchor' || anchorType === 'oneCellAnchor') {
+    const fromEl = anchorEl.querySelector('xdr\\:from');
+    const col = Number(fromEl?.querySelector('xdr\\:col')?.textContent);
+    const row = Number(fromEl?.querySelector('xdr\\:row')?.textContent);
+    const cellRef = Number.isFinite(col) && Number.isFinite(row)
+      ? `${colIndexToLetter(col)}${row + 1}`
+      : null;
+    return {
+      type: anchorType,
+      col,
+      row,
+      cellRef,
+      area: getAnchorArea(anchorEl),
+    };
+  }
+  if (anchorType === 'absoluteAnchor') {
+    return {
+      type: anchorType,
+      cellRef: null,
+      area: getAnchorArea(anchorEl),
+    };
+  }
+  return { type: anchorType, cellRef: null, area: 0 };
+}
+
+async function extractImagesFromWorkbook(arrayBuffer) {
+  const result = { bySheet: {}, all: [] };
+  if (!window.JSZip) return result;
+  let zip;
+  try {
+    zip = await JSZip.loadAsync(arrayBuffer);
+  } catch (error) {
+    return result;
+  }
+  const readText = async (path) => {
+    const file = zip.file(path);
+    if (!file) return null;
+    return file.async('text');
+  };
+  const readBase64 = async (path) => {
+    const file = zip.file(path);
+    if (!file) return null;
+    return file.async('base64');
+  };
+  const workbookXml = await readText('xl/workbook.xml');
+  const workbookRelsXml = await readText('xl/_rels/workbook.xml.rels');
+  const workbookDoc = parseXml(workbookXml);
+  const workbookRels = parseRelationships(workbookRelsXml);
+  if (!workbookDoc || !workbookRels) return result;
+
+  const sheetEntries = [];
+  workbookDoc.querySelectorAll('sheet').forEach((sheetEl) => {
+    const name = sheetEl.getAttribute('name');
+    const relId = sheetEl.getAttribute('r:id');
+    const rel = workbookRels[relId];
+    if (name && rel?.target) {
+      const sheetPath = resolveZipPath('xl/workbook.xml', rel.target);
+      sheetEntries.push({ name, sheetPath });
+    }
+  });
+
+  for (const sheetEntry of sheetEntries) {
+    const sheetRelsPath = sheetEntry.sheetPath
+      ? sheetEntry.sheetPath.replace('xl/worksheets/', 'xl/worksheets/_rels/')
+      : null;
+    if (!sheetRelsPath) continue;
+    const sheetRelsXml = await readText(`${sheetRelsPath}.rels`);
+    const sheetRels = parseRelationships(sheetRelsXml);
+    const drawingTargets = Object.values(sheetRels || {})
+      .filter((rel) => rel?.type?.includes('/drawing'))
+      .map((rel) => rel.target);
+    if (!drawingTargets.length) continue;
+
+    for (const drawingTarget of drawingTargets) {
+      const drawingPath = resolveZipPath(sheetEntry.sheetPath, drawingTarget);
+      if (!drawingPath) continue;
+      const drawingXml = await readText(drawingPath);
+      const drawingRelsPath = drawingPath.replace('xl/drawings/', 'xl/drawings/_rels/');
+      const drawingRelsXml = await readText(`${drawingRelsPath}.rels`);
+      const drawingDoc = parseXml(drawingXml);
+      const drawingRels = parseRelationships(drawingRelsXml);
+      if (!drawingDoc || !drawingRels) continue;
+
+      const anchors = [
+        ...drawingDoc.querySelectorAll('xdr\\:twoCellAnchor'),
+        ...drawingDoc.querySelectorAll('xdr\\:absoluteAnchor'),
+        ...drawingDoc.querySelectorAll('xdr\\:oneCellAnchor'),
+      ];
+
+      for (const anchor of anchors) {
+        const blip = anchor.querySelector('a\\:blip');
+        const embedId = blip?.getAttribute('r:embed');
+        const rel = drawingRels[embedId];
+        if (!rel?.target) continue;
+        const mediaPath = resolveZipPath(drawingPath, rel.target);
+        if (!mediaPath) continue;
+        const base64 = await readBase64(mediaPath);
+        if (!base64) continue;
+        const mime = getImageMimeType(mediaPath);
+        const anchorInfo = parseAnchor(anchor);
+        const imageInfo = {
+          sheetName: sheetEntry.name,
+          src: `data:${mime};base64,${base64}`,
+          mime,
+          mediaPath,
+          anchor: anchorInfo,
+          area: anchorInfo.area || 0,
+        };
+        if (!result.bySheet[sheetEntry.name]) result.bySheet[sheetEntry.name] = [];
+        result.bySheet[sheetEntry.name].push(imageInfo);
+        result.all.push(imageInfo);
+      }
+    }
+  }
+  return result;
+}
+
+function selectLargestImage(images) {
+  if (!images || images.length === 0) return null;
+  return images.slice().sort((a, b) => (b.area || 0) - (a.area || 0))[0];
+}
+
+function renderSheetImagePreview(sheetName) {
+  const preview = document.getElementById('details-image-preview');
+  const caption = document.getElementById('details-image-caption');
+  if (!preview) return;
+  preview.innerHTML = '';
+  if (caption) caption.textContent = '';
+  const images = state.sheetImages;
+  if (!images || images.all.length === 0) {
+    preview.innerHTML = '<p class="muted">В файле нет изображений</p>';
+    return;
+  }
+  const sheetImages = images.bySheet?.[sheetName] || [];
+  let selected = sheetImages.find((img) => img.anchor?.cellRef);
+  let floating = false;
+  if (!selected) {
+    selected = selectLargestImage(sheetImages.length ? sheetImages : images.all);
+    floating = true;
+  }
+  if (!selected) {
+    preview.innerHTML = '<p class="muted">В файле нет изображений</p>';
+    return;
+  }
+  const img = document.createElement('img');
+  img.src = selected.src;
+  img.alt = selected.anchor?.cellRef
+    ? `Изображение с привязкой ${selected.anchor.cellRef}`
+    : 'Плавающее изображение';
+  preview.appendChild(img);
+  if (caption) {
+    caption.textContent = selected.anchor?.cellRef
+      ? `Привязка: ${selected.anchor.cellRef}`
+      : 'Плавающая';
+  }
+  if (floating) {
+    const note = document.createElement('span');
+    note.className = 'muted';
+    note.textContent = 'Показана самая крупная';
+    preview.appendChild(note);
+  }
 }
 
 function renderPreview(sheet) {
@@ -982,13 +1219,16 @@ async function handleFileUpload(file) {
     cellFormula: true,
     cellNF: true,
     cellText: true,
+    bookFiles: true,
   });
   state.workbook = workbook;
   state.activeSheet = workbook.SheetNames[0];
+  state.sheetImages = await extractImagesFromWorkbook(data);
   const anchors = findCalcSummaryAnchors(workbook);
   state.calcSummary = { anchors };
   renderSheetOptions();
   renderPreview(workbook.Sheets[state.activeSheet]);
+  renderSheetImagePreview(state.activeSheet);
   const mapping = autoDetectMapping(workbook.Sheets[state.activeSheet]);
   const costCell = detectBaseCostCell(workbook.Sheets[state.activeSheet]);
   applyMappingToUI({ ...mapping, baseCostCell: costCell });
@@ -1041,6 +1281,7 @@ function attachEventHandlers() {
   document.getElementById('sheet-select').addEventListener('change', (event) => {
     state.activeSheet = event.target.value;
     renderPreview(state.workbook.Sheets[state.activeSheet]);
+    renderSheetImagePreview(state.activeSheet);
   });
 
   document.querySelectorAll('select[data-highlight]').forEach((select) => {
