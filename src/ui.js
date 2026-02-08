@@ -219,6 +219,7 @@ export function loadTemplate(name) {
 
 export function renderTemplateOptions() {
   const select = document.getElementById('template-select');
+  if (!select) return;
   const templates = JSON.parse(localStorage.getItem('mapping-templates') || '{}');
   select.innerHTML = '<option value="">Выбрать шаблон...</option>';
   Object.keys(templates).forEach((name) => {

@@ -171,24 +171,33 @@ async function handleFileUpload(file) {
     return;
   }
   setUploadError('');
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, {
-    type: 'array',
-    cellFormula: true,
-    cellNF: true,
-    cellText: true,
-  });
-  state.workbook = workbook;
-  state.activeSheet = workbook.SheetNames[0];
-  const anchors = findCalcSummaryAnchors(workbook);
-  state.calcSummary = { anchors };
-  renderSheetOptions();
-  renderPreview(workbook.Sheets[state.activeSheet]);
-  const mapping = autoDetectMapping(workbook.Sheets[state.activeSheet]);
-  const costCell = detectBaseCostCell(workbook.Sheets[state.activeSheet]);
-  applyMappingToUI({ ...mapping, baseCostCell: costCell });
-  renderCalcSummaryAnchors(anchors);
-  showScreen('mapping-screen');
+  try {
+    const data = await file.arrayBuffer();
+    const workbook = XLSX.read(data, {
+      type: 'array',
+      cellFormula: true,
+      cellNF: true,
+      cellText: true,
+    });
+    if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+      setUploadError('В файле не найдено листов. Проверьте файл и попробуйте снова.');
+      return;
+    }
+    state.workbook = workbook;
+    state.activeSheet = workbook.SheetNames[0];
+    const anchors = findCalcSummaryAnchors(workbook);
+    state.calcSummary = { anchors };
+    renderSheetOptions();
+    renderPreview(workbook.Sheets[state.activeSheet]);
+    const mapping = autoDetectMapping(workbook.Sheets[state.activeSheet]);
+    const costCell = detectBaseCostCell(workbook.Sheets[state.activeSheet]);
+    applyMappingToUI({ ...mapping, baseCostCell: costCell });
+    renderCalcSummaryAnchors(anchors);
+    showScreen('mapping-screen');
+  } catch (error) {
+    console.error(error);
+    setUploadError('Не удалось прочитать файл. Проверьте формат и попробуйте снова.');
+  }
 }
 
 export function attachEventHandlers() {
