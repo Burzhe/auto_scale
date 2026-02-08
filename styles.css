@@ -364,6 +364,34 @@ select {
   margin-top: 12px;
 }
 
+.base-params-layout {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.base-params-text {
+  flex: 1;
+}
+
+.base-image-block {
+  display: grid;
+  gap: 8px;
+  width: 180px;
+  flex: 0 0 180px;
+}
+
+.base-image-preview {
+  min-height: 120px;
+  padding: 8px;
+}
+
+.base-image-preview img,
+.base-image-preview canvas {
+  max-height: 120px;
+}
+
 .dimension-inputs {
   display: grid;
   gap: 12px;
@@ -451,6 +479,15 @@ select {
 
   .details-panel-grid {
     grid-template-columns: 1fr;
+  }
+
+  .base-params-layout {
+    flex-direction: column;
+  }
+
+  .base-image-block {
+    width: 100%;
+    flex: 1 1 auto;
   }
 
   header.header {
