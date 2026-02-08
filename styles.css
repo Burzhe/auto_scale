@@ -329,6 +329,18 @@ select {
   margin-bottom: 12px;
 }
 
+.furniture-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: rgba(0, 168, 107, 0.08);
+  color: var(--text);
+  font-size: 14px;
+}
+
 .tab {
   padding: 8px 16px;
   border-radius: 999px;

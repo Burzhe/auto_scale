@@ -381,6 +381,56 @@ function formatDimensions(dims) {
   return `${dims.width}×${dims.depth}×${dims.height}`;
 }
 
+function buildOriginalIndex(items, keyFn) {
+  return (items || []).reduce((acc, item) => {
+    const key = keyFn(item);
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(item);
+    return acc;
+  }, {});
+}
+
+function formatDelta(value) {
+  if (!Number.isFinite(value) || value === 0) return '0';
+  return value > 0 ? `+${value}` : `${value}`;
+}
+
+function getCorpusChangeText(part, originalIndex, originalGroupIndex) {
+  const key = [
+    part.name,
+    part.material,
+    part.thickness,
+    part.length_mm,
+    part.width_mm,
+  ].join('|');
+  const exact = originalIndex[key]?.[0];
+  if (exact) {
+    const deltaQty = (part.qty || 0) - (exact.qty || 0);
+    return deltaQty === 0 ? 'без изменений' : `кол-во ${formatDelta(deltaQty)}`;
+  }
+
+  const groupKey = [part.name, part.material, part.thickness].join('|');
+  const group = originalGroupIndex[groupKey];
+  if (group && group.length) {
+    const prev = group[0];
+    if (prev.length_mm && prev.width_mm && part.length_mm && part.width_mm) {
+      return `размер изменён (${prev.length_mm}×${prev.width_mm} → ${part.length_mm}×${part.width_mm})`;
+    }
+    return 'размер изменён';
+  }
+
+  return 'новая деталь';
+}
+
+function getFurnitureChangeText(item, originalIndex) {
+  const key = `${item.code || ''}|${item.name || ''}|${item.unit || ''}`;
+  const original = originalIndex[key]?.[0];
+  if (!original) return 'новая позиция';
+  const deltaQty = (item.qty || 0) - (original.qty || 0);
+  if (deltaQty === 0) return 'без изменений';
+  return `кол-во ${formatDelta(deltaQty)}`;
+}
+
 function renderBaseSummary(spec) {
   const baseWeight = calculateWeight(spec.corpus, inferDensityFromSpec(spec));
   const basePrice = getBasePriceFromSpec(spec);
@@ -438,18 +488,22 @@ function renderValidationSummary(spec) {
 function renderResultsTable(type, spec) {
   const table = document.getElementById('results-table');
   const calcWrap = document.getElementById('calc-breakdown');
+  const furnitureSummary = document.getElementById('furniture-summary');
   if (calcWrap) {
     calcWrap.classList.toggle('hidden', type !== 'calc');
   }
   if (!table) return;
   table.classList.toggle('hidden', type === 'calc');
   table.innerHTML = '';
+  if (furnitureSummary) {
+    furnitureSummary.classList.toggle('hidden', type !== 'furniture');
+  }
   if (type === 'calc') {
     renderCalcBreakdown(spec);
     return;
   }
   if (type === 'furniture') {
-    const headers = ['Код', 'Наименование', 'Кол-во', 'Ед.', 'Цена ₽'];
+    const headers = ['Код', 'Наименование', 'Кол-во', 'Ед.', 'Цена ₽', 'Изменение'];
     const headerRow = document.createElement('tr');
     headers.forEach((text) => {
       const th = document.createElement('th');
@@ -457,6 +511,24 @@ function renderResultsTable(type, spec) {
       headerRow.appendChild(th);
     });
     table.appendChild(headerRow);
+
+    const originalIndex = buildOriginalIndex(state.originalSpec?.furniture || [], (item) => {
+      return `${item.code || ''}|${item.name || ''}|${item.unit || ''}`;
+    });
+    if (furnitureSummary) {
+      const totals = (spec.furniture || []).reduce((acc, item) => {
+        const sum = Number(item.sum || 0);
+        if (item.origin === 0) acc.imp += sum;
+        if (item.origin === 1) acc.rep += sum;
+        acc.total += sum;
+        return acc;
+      }, { imp: 0, rep: 0, total: 0 });
+      furnitureSummary.innerHTML = `
+        <div>Импортная: <strong>${formatNumber(totals.imp, '₽')}</strong></div>
+        <div>Отечественная: <strong>${formatNumber(totals.rep, '₽')}</strong></div>
+        <div>Итого: <strong>${formatNumber(totals.total, '₽')}</strong></div>
+      `;
+    }
 
     if (!spec.furniture || spec.furniture.length === 0) {
       const emptyRow = document.createElement('tr');
@@ -476,6 +548,7 @@ function renderResultsTable(type, spec) {
         item.qty,
         item.unit,
         item.price,
+        getFurnitureChangeText(item, originalIndex),
       ].forEach((value) => {
         const td = document.createElement('td');
         td.textContent = value ?? '';
@@ -486,7 +559,7 @@ function renderResultsTable(type, spec) {
     return;
   }
 
-  const headers = ['Наименование', 'Материал', 'Длина', 'Ширина', 'Толщина', 'Кол-во'];
+  const headers = ['Наименование', 'Материал', 'Длина', 'Ширина', 'Толщина', 'Кол-во', 'Изменение'];
   const headerRow = document.createElement('tr');
   headers.forEach((text) => {
     const th = document.createElement('th');
@@ -494,6 +567,19 @@ function renderResultsTable(type, spec) {
     headerRow.appendChild(th);
   });
   table.appendChild(headerRow);
+
+  const originalExactIndex = buildOriginalIndex(state.originalSpec?.corpus || [], (part) => {
+    return [
+      part.name,
+      part.material,
+      part.thickness,
+      part.length_mm,
+      part.width_mm,
+    ].join('|');
+  });
+  const originalGroupIndex = buildOriginalIndex(state.originalSpec?.corpus || [], (part) => {
+    return [part.name, part.material, part.thickness].join('|');
+  });
 
   spec.corpus.forEach((part) => {
     const tr = document.createElement('tr');
@@ -504,6 +590,7 @@ function renderResultsTable(type, spec) {
       part.width_mm,
       part.thickness,
       part.qty,
+      getCorpusChangeText(part, originalExactIndex, originalGroupIndex),
     ].forEach((value) => {
       const td = document.createElement('td');
       td.textContent = value ?? '';
