@@ -211,6 +211,10 @@ function parseNumericValue(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function round2(value) {
+  return Math.round((Number(value) || 0) * 100) / 100;
+}
+
 function normalizeLabelText(value) {
   // normalize for matching labels like "Трудоемкость, человеко-часы=" -> "трудоемкостьчеловекочасы"
   return String(value ?? '')
@@ -324,12 +328,11 @@ function findCalcSummaryAnchors(workbook) {
   return { totalCostRef, ...anchors };
 }
 
-function extractRefsFromFormula(formulaString) {
+function parseRefsFromFormula(formulaString) {
   if (!formulaString) return [];
   const formula = String(formulaString).replace(/^=/, '');
   const regex = /(?:'[^']+'|[A-Za-z0-9_]+)?!\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?|\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?/g;
-  const matches = formula.match(regex) || [];
-  return matches;
+  return formula.match(regex) || [];
 }
 
 function expandRangeRefs(rangeRef, sheetName) {
@@ -407,7 +410,7 @@ function traceCellLeaves(workbook, rootRef, opts = {}) {
     const cell = sheet[parsed.cellRef];
     const node = { ref, children: [] };
     if (cell?.f) {
-      const refs = extractRefsFromFormula(cell.f);
+      const refs = parseRefsFromFormula(cell.f);
       if (refs.length) {
         refs.forEach((raw) => {
           const sheetMatch = raw.match(/^(?:'([^']+)'|([^'!]+))!([A-Za-z0-9$]+(?::[A-Za-z0-9$]+)?)$/);
@@ -753,23 +756,21 @@ function inferCostTableFallback(workbook, sheetName, anchorValue, materials) {
 }
 
 
-function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
+function buildCostTableBreakdown(workbook, anchorRef, materials) {
   const anchorParts = decodeRefParts(anchorRef);
   if (!anchorParts) {
-    return { anchorValue: 0, leaves: [], items: [], rates: { usable: false }, debug: { reason: 'bad anchor' } };
+    return { anchorValue: 0, leaves: [], details: [], rates: { usable: false }, debug: { reason: 'bad anchor' } };
   }
 
   const ws = workbook.Sheets[anchorParts.sheetName];
   if (!ws) {
-    return { anchorValue: 0, leaves: [], items: [], rates: { usable: false }, debug: { reason: 'sheet missing' } };
+    return { anchorValue: 0, leaves: [], details: [], rates: { usable: false }, debug: { reason: 'sheet missing' } };
   }
 
   const anchorCell = ws[anchorParts.cellRef];
   const anchorValue = parseNumericValue(anchorCell?.v) || 0;
   const anchorFormula = getCellFormulaString(anchorCell);
-
-  // anchorFormula (e.g. D92): "M66+O66+...+AU66"
-  const totalsRefsRaw = anchorFormula ? extractRefsFromFormula(anchorFormula) : [];
+  const totalsRefsRaw = anchorFormula ? parseRefsFromFormula(anchorFormula) : [];
 
   if (!totalsRefsRaw.length) {
     const fallback = inferCostTableFallback(workbook, anchorParts.sheetName, anchorValue, materials);
@@ -777,7 +778,16 @@ function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
       return {
         anchorValue,
         leaves: fallback.leafRefs,
-        items: fallback.items,
+        details: (fallback.items || []).map((item) => ({
+          name: item.name,
+          thickness_mm: item.thicknessMm ?? null,
+          length_mm: null,
+          width_mm: null,
+          qty: null,
+          area_m2: item.areaM2 ?? null,
+          cost: item.costRub ?? null,
+          rowIndex: null,
+        })),
         rates: fallback.rates,
         debug: {
           method: 'table-scan',
@@ -786,11 +796,11 @@ function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
       };
     }
   }
-  const totalsFullRefs = expandRanges(totalsRefsRaw)
+
+  const totalsFullRefs = expandRanges(totalsRefsRaw, anchorParts.sheetName)
     .map((r) => toFullRef(r, anchorParts.sheetName))
     .filter(Boolean);
 
-  // Determine which cost columns are actually used (non-zero totals). If none, keep all.
   const totalsWithValues = totalsFullRefs
     .map((fullRef) => {
       const p = decodeRefParts(fullRef, anchorParts.sheetName);
@@ -805,7 +815,7 @@ function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
     })
     .filter((x) => x.p);
 
-  const nonZeroTotals = totalsWithValues.filter((x) => typeof x.value === 'number' && x.value > 0.000001);
+  const nonZeroTotals = totalsWithValues.filter((x) => typeof x.value === 'number' && x.value !== 0);
   const activeTotals = (nonZeroTotals.length ? nonZeroTotals : totalsWithValues);
 
   const leafSet = new Set();
@@ -814,17 +824,14 @@ function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
   activeTotals.forEach((t) => {
     if (!t.p) return;
     activeCostCols.add(t.p.col);
-
-    const refs = extractRefsFromFormula(t.formula);
-    const expanded = expandRanges(refs);
-    // Keep leaves in the same column as the total cell (usually SUM(AA51:AA65))
+    const refs = parseRefsFromFormula(t.formula);
+    const expanded = expandRanges(refs, t.p.sheetName);
     expanded.forEach((r) => {
       const leafFull = toFullRef(r, t.p.sheetName);
       if (!leafFull) return;
       const lp = decodeRefParts(leafFull, t.p.sheetName);
       if (!lp) return;
-      if (lp.col !== t.p.col) return;
-      if (lp.r === t.p.r) return; // don't include the total cell itself
+      if (lp.r === t.p.r && lp.col === t.p.col) return;
       leafSet.add(leafFull);
     });
   });
@@ -833,63 +840,62 @@ function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
     const pa = decodeRefParts(a, anchorParts.sheetName);
     const pb = decodeRefParts(b, anchorParts.sheetName);
     if (pa.sheetName !== pb.sheetName) return pa.sheetName.localeCompare(pb.sheetName);
-    if (pa.c !== pb.c) return pa.c - pb.c;
-    return pa.r - pb.r;
+    if (pa.r !== pb.r) return pa.r - pb.r;
+    return pa.c - pb.c;
   });
 
-  // Build "items" from the standard "Плитный материал" layout (name A, thickness B, len C, width D, qty I)
-  const items = [];
+  const details = [];
+  const rowMap = new Map();
   let leafSum = 0;
   let areaSum = 0;
 
   leaves.forEach((fullRef) => {
     const p = decodeRefParts(fullRef, anchorParts.sheetName);
+    if (!p) return;
     const sheet = workbook.Sheets[p.sheetName];
-    const costCell = sheet?.[p.cellRef];
-    const cost = parseNumericValue(costCell?.v);
-    if (!(cost > 0)) return;
+    const cost = parseNumericValue(sheet?.[p.cellRef]?.v) || 0;
+    const rowKey = `${p.sheetName}!${p.r}`;
+    const item = rowMap.get(rowKey) || { rowKey, sheetName: p.sheetName, row: p.r, cost: 0 };
+    item.cost += cost;
+    rowMap.set(rowKey, item);
+    leafSum += cost;
+  });
 
-    const nameVal = sheet?.[XLSX.utils.encode_cell({ r: p.r, c: 0 })]?.v;
-    const matIdVal = sheet?.[XLSX.utils.encode_cell({ r: p.r, c: 1 })]?.v;
-    const lenVal = sheet?.[XLSX.utils.encode_cell({ r: p.r, c: 2 })]?.v;
-    const widVal = sheet?.[XLSX.utils.encode_cell({ r: p.r, c: 3 })]?.v;
-    const qtyVal = sheet?.[XLSX.utils.encode_cell({ r: p.r, c: 8 })]?.v;
+  rowMap.forEach((item) => {
+    const sheet = workbook.Sheets[item.sheetName];
+    const row = item.row;
+    const nameVal = sheet?.[`A${row + 1}`]?.v;
+    const thicknessVal = parseNumericValue(sheet?.[`B${row + 1}`]?.v);
+    const lengthVal = parseNumericValue(sheet?.[`C${row + 1}`]?.v);
+    const widthVal = parseNumericValue(sheet?.[`D${row + 1}`]?.v);
+    const qtyVal = parseNumericValue(sheet?.[`I${row + 1}`]?.v);
 
-    const areaCellRef = XLSX.utils.encode_cell({ r: p.r, c: Math.max(0, p.c - 1) });
-    const areaVal = parseNumericValue(sheet?.[areaCellRef]?.v);
+    const qty = Number.isFinite(qtyVal) ? qtyVal : 0;
+    const area = (lengthVal && widthVal && qty)
+      ? (lengthVal * widthVal * qty) / 1e6
+      : null;
 
-    const thicknessMm = extractThickness(matIdVal);
-    const materialName = materials?.[String(matIdVal)]?.name || '';
-
-    const qty = parseNumericValue(qtyVal) || 0;
-
-    items.push({
-      name: String(nameVal ?? `Строка ${p.r + 1}`),
-      material: materialName,
-      thickness_mm: thicknessMm || null,
-      material_id: matIdVal != null ? String(matIdVal) : '',
-      length_mm: parseNumericValue(lenVal) || null,
-      width_mm: parseNumericValue(widVal) || null,
+    details.push({
+      name: String(nameVal ?? `Строка ${row + 1}`),
+      thickness_mm: thicknessVal || null,
+      length_mm: lengthVal || null,
+      width_mm: widthVal || null,
       qty: qty || null,
-      area_m2: areaVal || null,
-      cost_rub: cost,
-      source: {
-        costRef: `${p.sheetName}!${p.cellRef}`,
-        areaRef: `${p.sheetName}!${areaCellRef}`,
-        row: p.r + 1,
-      },
+      area_m2: area,
+      cost: round2(item.cost || 0),
+      rowIndex: row + 1,
     });
 
-    leafSum += cost;
-    if (areaVal > 0) areaSum += areaVal;
+    if (area) areaSum += area;
   });
 
   const byThickness = {};
-  items.forEach((it) => {
+  details.forEach((it) => {
+    if (!it.area_m2 || !it.cost) return;
     const key = it.thickness_mm ? `${Math.round(it.thickness_mm)}mm` : 'unknown';
     if (!byThickness[key]) byThickness[key] = { area: 0, cost: 0 };
-    byThickness[key].area += it.area_m2 || 0;
-    byThickness[key].cost += it.cost_rub || 0;
+    byThickness[key].area += it.area_m2;
+    byThickness[key].cost += it.cost;
   });
 
   const rateByThickness = {};
@@ -900,9 +906,8 @@ function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
   });
 
   const avgRate = areaSum > 0 ? (leafSum / areaSum) : null;
-  const coverage = anchorValue > 0 ? (leafSum / anchorValue) : 0;
-
-  const usable = Boolean(avgRate && avgRate > 0 && coverage > 0.85 && coverage < 1.15);
+  const coverage = anchorValue > 0 ? (leafSum / anchorValue) : null;
+  const usable = Boolean(avgRate && avgRate > 0 && coverage && coverage > 0.95 && coverage < 1.05);
 
   const debug = {
     anchorValue,
@@ -910,29 +915,29 @@ function buildCostTableBreakdown(workbook, anchorRef, materials, options = {}) {
     leafSum,
     areaSum,
     coverage,
-    leafRefs: leaves.slice(0, 200).join(', '), // keep it short in UI
+    leafRefs: leaves.slice(0, 200).join(', '),
     costColsLetters: Array.from(activeCostCols).join(', ') || '—',
   };
 
   return {
     anchorValue,
     leaves,
-    items,
+    details,
     rates: { usable, avgRate, byThickness: rateByThickness },
     debug,
   };
 }
 function buildCalcSummary(workbook, anchors, materials) {
   const baseValues = {
-    totalCost: anchors.totalCostRef ? readAnchorValue(workbook, anchors.totalCostRef) : 0,
-    dsp: anchors.dspRef ? readAnchorValue(workbook, anchors.dspRef) : 0,
-    edge: anchors.edgeRef ? readAnchorValue(workbook, anchors.edgeRef) : 0,
-    plastic: anchors.plasticRef ? readAnchorValue(workbook, anchors.plasticRef) : 0,
-    fabric: anchors.fabricRef ? readAnchorValue(workbook, anchors.fabricRef) : 0,
-    hwImported: anchors.hwImpRef ? readAnchorValue(workbook, anchors.hwImpRef) : 0,
-    hwReplaced: anchors.hwRepRef ? readAnchorValue(workbook, anchors.hwRepRef) : 0,
-    pack: anchors.packRef ? readAnchorValue(workbook, anchors.packRef) : 0,
-    labor: anchors.laborRef ? readAnchorValue(workbook, anchors.laborRef) : 0,
+    totalCost: anchors.totalCostRef ? readAnchorValue(workbook, anchors.totalCostRef) : null,
+    dsp: anchors.dspRef ? readAnchorValue(workbook, anchors.dspRef) : null,
+    edge: anchors.edgeRef ? readAnchorValue(workbook, anchors.edgeRef) : null,
+    plastic: anchors.plasticRef ? readAnchorValue(workbook, anchors.plasticRef) : null,
+    fabric: anchors.fabricRef ? readAnchorValue(workbook, anchors.fabricRef) : null,
+    hwImp: anchors.hwImpRef ? readAnchorValue(workbook, anchors.hwImpRef) : null,
+    hwRep: anchors.hwRepRef ? readAnchorValue(workbook, anchors.hwRepRef) : null,
+    pack: anchors.packRef ? readAnchorValue(workbook, anchors.packRef) : null,
+    labor: anchors.laborRef ? readAnchorValue(workbook, anchors.laborRef) : null,
     laborHours: anchors.laborHoursRef ? readAnchorValue(workbook, anchors.laborHoursRef) : null,
   };
 
@@ -948,9 +953,12 @@ function buildCalcSummary(workbook, anchors, materials) {
     const dsp = buildCostTableBreakdown(workbook, anchors.dspRef, materials);
     summary.breakdown.dsp = {
       usable: dsp.rates.usable,
-      // store leaf row items (so we can inspect what was counted)
-      items: dsp.items,
+      details: dsp.details,
       leaves: dsp.leaves,
+      leafCount: dsp.debug?.leafCount ?? dsp.leaves?.length ?? 0,
+      leafSum: dsp.debug?.leafSum ?? 0,
+      totalValue: dsp.anchorValue ?? 0,
+      coverage: dsp.debug?.coverage ?? null,
     };
     summary.rates.dsp = dsp.rates;
     summary.debug.dsp = dsp.debug;
@@ -960,12 +968,21 @@ function buildCalcSummary(workbook, anchors, materials) {
     const edge = buildCostTableBreakdown(workbook, anchors.edgeRef, materials);
     summary.breakdown.edge = {
       usable: edge.rates.usable,
-      items: edge.items,
+      details: edge.details,
       leaves: edge.leaves,
+      leafCount: edge.debug?.leafCount ?? edge.leaves?.length ?? 0,
+      leafSum: edge.debug?.leafSum ?? 0,
+      totalValue: edge.anchorValue ?? 0,
+      coverage: edge.debug?.coverage ?? null,
     };
     summary.rates.edge = edge.rates;
     summary.debug.edge = edge.debug;
   }
+
+  summary.debug.hardwareAnchors = {
+    hwImpAnchorRef: anchors.hwImpRef || null,
+    hwRepAnchorRef: anchors.hwRepRef || null,
+  };
 
   return summary;
 }
@@ -1000,12 +1017,12 @@ function parseDimensions(sheet, mapping) {
 
 function detectBaseCostCell(sheet) {
   const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
-  const keywords = ['прямые затраты', 'итого', 'стоимость'];
+  const keywords = ['прямые затраты', 'стоимость расчета суммарно'];
   for (let rowIndex = 0; rowIndex < json.length; rowIndex += 1) {
     const row = json[rowIndex] || [];
     for (let colIndex = 0; colIndex < row.length; colIndex += 1) {
-      const cellText = String(row[colIndex] || '').toLowerCase();
-      if (!keywords.some((keyword) => cellText.includes(keyword))) continue;
+      const cellText = normalizeLabelText(row[colIndex]);
+      if (!keywords.some((keyword) => cellText.includes(normalizeLabelText(keyword)))) continue;
       const candidate = parseNumericValue(row[colIndex + 1]);
       if (Number.isFinite(candidate)) {
         return `${colIndexToLetter(colIndex + 1)}${rowIndex + 1}`;
@@ -1064,22 +1081,76 @@ function parseCorpusDetails(sheet, mapping, materials) {
   return parts;
 }
 
+function findFurnitureHeaderRow(json) {
+  for (let row = 0; row < json.length; row += 1) {
+    const rowData = json[row] || [];
+    const a = normalizeLabelText(rowData[0]);
+    const b = normalizeLabelText(rowData[1]);
+    const c = normalizeLabelText(rowData[2]);
+    const d = normalizeLabelText(rowData[3]);
+    if (a.includes('коэф') && b.includes('код') && c.includes('кол') && d.includes('наимен')) {
+      return row + 1;
+    }
+  }
+  return null;
+}
+
 function parseFurniture(sheet, mapping) {
   if (!sheet) return [];
   const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+  const detectedHeader = findFurnitureHeaderRow(json);
+  const headerRow = detectedHeader || mapping.furnitureHeaderRow || null;
+  if (!headerRow) return [];
+
+  const hasTemplateHeader = Boolean(detectedHeader);
+  const columns = hasTemplateHeader
+    ? {
+      coef: 0,
+      code: 1,
+      qty: 2,
+      name: 3,
+      unit: 4,
+      origin: 5,
+      priceCurrent: 6,
+      priceUpdated: 7,
+      sum: 8,
+    }
+    : {
+      coef: null,
+      code: mapping.furnitureCodeCol,
+      qty: mapping.furnitureQtyCol,
+      name: mapping.furnitureNameCol,
+      unit: mapping.furnitureUnitCol,
+      origin: null,
+      priceCurrent: mapping.furniturePriceCol,
+      priceUpdated: null,
+      sum: null,
+    };
+
   const items = [];
-  for (let row = mapping.furnitureHeaderRow + 1; row < mapping.furnitureHeaderRow + 40; row += 1) {
+  for (let row = headerRow + 1; row < headerRow + 200; row += 1) {
     const rowData = json[row - 1];
     if (!rowData) continue;
-    const code = rowData[mapping.furnitureCodeCol];
-    const name = rowData[mapping.furnitureNameCol];
-    if (!code && !name) continue;
+    const code = rowData[columns.code];
+    if (!code) break;
+    const coef = parseNumericValue(rowData[columns.coef]) || 1;
+    const qty = parseNumericValue(rowData[columns.qty]) || 0;
+    const name = rowData[columns.name];
+    const unit = rowData[columns.unit] || 'шт';
+    const origin = Number(parseNumericValue(rowData[columns.origin]));
+    const price = parseNumericValue(rowData[columns.priceUpdated])
+      ?? parseNumericValue(rowData[columns.priceCurrent])
+      ?? 0;
+    const sum = parseNumericValue(rowData[columns.sum]) ?? qty * price * coef;
     items.push({
       code,
       name,
-      qty: Number(rowData[mapping.furnitureQtyCol] || 0),
-      unit: rowData[mapping.furnitureUnitCol] || 'шт',
-      price: Number(rowData[mapping.furniturePriceCol] || 0),
+      qty,
+      unit,
+      origin,
+      price,
+      sum,
+      coef,
     });
   }
   return items;
@@ -1147,6 +1218,17 @@ function autoDetectFurnitureMapping(sheet) {
   const mapping = {};
   if (!sheet) return mapping;
   const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+
+  const headerRow = findFurnitureHeaderRow(json);
+  if (headerRow) {
+    mapping.furnitureHeaderRow = headerRow;
+    mapping.furnitureCodeCol = 1;
+    mapping.furnitureQtyCol = 2;
+    mapping.furnitureNameCol = 3;
+    mapping.furnitureUnitCol = 4;
+    mapping.furniturePriceCol = 7;
+    return mapping;
+  }
 
   for (let row = 0; row < 50; row += 1) {
     const rowData = json[row];
@@ -1368,11 +1450,32 @@ function parseExcelWithMapping(workbook, mapping) {
   const dims = parseDimensions(sheet, mapping);
   const anchors = resolveAnchors(state.calcSummary?.anchors, mapping.anchorOverrides);
   const calcSummary = buildCalcSummary(workbook, anchors, materials);
-  const baseCostFromAnchors = calcSummary.baseValues.totalCost;
+  const baseValues = calcSummary.baseValues || {};
+  if (Array.isArray(furniture) && furniture.length) {
+    const hwTotals = furniture.reduce((acc, row) => {
+      const sum = Number(row.sum || 0);
+      if (row.origin === 0) acc.hwImp += sum;
+      if (row.origin === 1) acc.hwRep += sum;
+      return acc;
+    }, { hwImp: 0, hwRep: 0 });
+    calcSummary.debug.hardwareTable = {
+      hwImp: hwTotals.hwImp,
+      hwRep: hwTotals.hwRep,
+      total: hwTotals.hwImp + hwTotals.hwRep,
+    };
+  }
+  const baseCostFromAnchors = baseValues.totalCost;
   const baseCost = Number.isFinite(baseCostFromAnchors)
     ? baseCostFromAnchors
     : (mapping.baseCostCell ? readCellNumber(sheet, mapping.baseCostCell) : null);
-  const baseMaterialCost = calcSummary.baseValues.dsp || calculatePrice(corpus, materials);
+  const materialSumCandidate = [baseValues.dsp, baseValues.edge, baseValues.plastic, baseValues.fabric]
+    .some((v) => Number.isFinite(v))
+    ? [baseValues.dsp, baseValues.edge, baseValues.plastic, baseValues.fabric]
+      .reduce((sum, v) => sum + (Number(v) || 0), 0)
+    : null;
+  const baseMaterialCost = Number.isFinite(materialSumCandidate)
+    ? materialSumCandidate
+    : calculatePrice(corpus, materials);
 
   return {
     dims,
@@ -1409,10 +1512,9 @@ function calculateWeight(parts) {
   let totalKg = 0;
   parts.forEach((part) => {
     if (!part.thickness || !part.length_mm || !part.width_mm || !part.qty) return;
-    const density = getMaterialDensity(part.material);
     const areaM2 = (part.length_mm / 1000) * (part.width_mm / 1000);
     const thicknessM = part.thickness / 1000;
-    totalKg += density * areaM2 * thicknessM * part.qty;
+    totalKg += MATERIAL_DENSITY * areaM2 * thicknessM * part.qty;
   });
   return Math.round(totalKg * 100) / 100;
 }
@@ -1941,7 +2043,10 @@ function attachEventHandlers() {
       const spec = state.originalSpec;
       const weight = calculateWeight(spec.corpus);
       const baseMaterialsCost = spec.baseMaterialCost || calculatePrice(spec.corpus, spec.materials || {});
-      const baseHardwareCost = calculateFurnitureCost(spec.furniture || []);
+      const baseValues = spec.calcSummary?.baseValues || {};
+      const baseHardwareCost = Number.isFinite(baseValues.hwImp) || Number.isFinite(baseValues.hwRep)
+        ? (Number(baseValues.hwImp || 0) + Number(baseValues.hwRep || 0))
+        : calculateFurnitureCost(spec.furniture || []);
       const baseOther = spec.baseCost
         ? Math.max(0, spec.baseCost - (baseMaterialsCost + baseHardwareCost))
         : 0;
