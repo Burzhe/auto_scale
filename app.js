@@ -13,6 +13,152 @@ const state = {
   showCalcSources: false,
 };
 
+function resetControl(control) {
+  if (!control) return;
+  if (control.tagName === 'SELECT') {
+    if (control.defaultValue) {
+      control.value = control.defaultValue;
+    } else {
+      control.selectedIndex = 0;
+    }
+    return;
+  }
+  if (control.type === 'checkbox' || control.type === 'radio') {
+    control.checked = control.defaultChecked;
+    return;
+  }
+  if (control.type === 'file') {
+    control.value = '';
+    return;
+  }
+  control.value = control.defaultValue ?? '';
+}
+
+function resetControls(container) {
+  if (!container) return;
+  container.querySelectorAll('input, select, textarea').forEach((control) => resetControl(control));
+}
+
+function resetResultsUI() {
+  const resultFields = [
+    'current-dims',
+    'current-weight',
+    'current-price',
+    'validation-dsp',
+    'validation-edge',
+    'validation-plastic',
+    'validation-fabric',
+    'validation-hw-imp',
+    'validation-hw-rep',
+    'validation-pack',
+    'validation-labor',
+    'validation-total',
+    'new-dims',
+    'new-weight',
+    'new-price',
+    'structure-sections',
+    'structure-partitions',
+    'structure-shelves',
+    'price-materials',
+    'price-hardware',
+    'price-other',
+    'price-total',
+    'calc-leaf-count',
+    'calc-coverage',
+    'calc-leaf-sum',
+    'calc-total',
+  ];
+  resultFields.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = '—';
+  });
+
+  const warningsBox = document.getElementById('warnings');
+  if (warningsBox) warningsBox.innerHTML = '';
+
+  const validationWarning = document.getElementById('validation-warning');
+  if (validationWarning) validationWarning.innerHTML = '';
+
+  const resultsTable = document.getElementById('results-table');
+  if (resultsTable) resultsTable.innerHTML = '';
+
+  const calcBreakdownTable = document.getElementById('calc-breakdown-table');
+  if (calcBreakdownTable) calcBreakdownTable.innerHTML = '';
+
+  const calcReason = document.getElementById('calc-breakdown-reason');
+  if (calcReason) calcReason.textContent = '';
+
+  const furnitureSummary = document.getElementById('furniture-summary');
+  if (furnitureSummary) {
+    furnitureSummary.innerHTML = '';
+    furnitureSummary.classList.add('hidden');
+  }
+
+  const calcWrap = document.getElementById('calc-breakdown');
+  if (calcWrap) calcWrap.classList.add('hidden');
+
+  const toggleSourcesBtn = document.getElementById('calc-toggle-sources');
+  if (toggleSourcesBtn) {
+    toggleSourcesBtn.classList.add('hidden');
+    toggleSourcesBtn.textContent = 'Показать источники';
+  }
+
+  document.querySelectorAll('.tab').forEach((tab, index) => {
+    tab.classList.toggle('active', index === 0);
+  });
+
+  const resultsCard = document.getElementById('results-card');
+  if (resultsCard) resultsCard.classList.add('hidden');
+}
+
+function resetMappingUI() {
+  const previewTable = document.getElementById('preview-table');
+  if (previewTable) previewTable.innerHTML = '';
+
+  const indicator = document.getElementById('cursor-indicator');
+  if (indicator) indicator.textContent = 'Наведите курсор на ячейку';
+
+  const sheetSelect = document.getElementById('sheet-select');
+  if (sheetSelect) sheetSelect.innerHTML = '';
+
+  const furnitureSelect = document.getElementById('furniture-sheet');
+  if (furnitureSelect) furnitureSelect.innerHTML = '<option value="">—</option>';
+
+  const summaryList = document.getElementById('calc-summary-list');
+  if (summaryList) summaryList.innerHTML = '';
+
+  const summaryWarning = document.getElementById('calc-summary-warning');
+  if (summaryWarning) summaryWarning.textContent = '';
+
+  const mappingScreen = document.getElementById('mapping-screen');
+  resetControls(mappingScreen);
+}
+
+function resetAppState() {
+  if (state.worker) {
+    state.worker.terminate();
+  }
+  state.workbook = null;
+  state.mapping = {};
+  state.originalSpec = null;
+  state.newSpec = null;
+  state.worker = null;
+  state.activeSheet = null;
+  state.activeCellInput = null;
+  state.activeResultsTab = 'corpus';
+  state.calcSummary = null;
+  state.showCalcSources = false;
+}
+
+function resetCalculation() {
+  resetAppState();
+  setUploadError('');
+  resetMappingUI();
+  resetResultsUI();
+  resetControls(document.getElementById('upload-screen'));
+  resetControls(document.getElementById('results-screen'));
+}
+
 function setUploadError(message) {
   const box = document.getElementById('upload-error');
   if (!box) return;
@@ -989,6 +1135,7 @@ function attachEventHandlers() {
   });
 
   document.getElementById('reset-btn').addEventListener('click', () => {
+    resetCalculation();
     showScreen('upload-screen');
   });
 
