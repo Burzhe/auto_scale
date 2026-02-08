@@ -395,16 +395,10 @@ function selectLargestImage(images) {
   return images.slice().sort((a, b) => (b.area || 0) - (a.area || 0))[0];
 }
 
-function renderSheetImagePreview(sheetName) {
-  const preview = document.getElementById('details-image-preview');
-  const caption = document.getElementById('details-image-caption');
-  if (!preview) return;
-  preview.innerHTML = '';
-  if (caption) caption.textContent = '';
+function getSelectedSheetImage(sheetName) {
   const images = state.sheetImages;
   if (!images || images.all.length === 0) {
-    preview.innerHTML = '<p class="muted">В файле нет изображений</p>';
-    return;
+    return { selected: null, floating: false, hasImages: false };
   }
   const sheetImages = images.bySheet?.[sheetName] || [];
   let selected = sheetImages.find((img) => img.anchor?.cellRef);
@@ -413,10 +407,18 @@ function renderSheetImagePreview(sheetName) {
     selected = selectLargestImage(sheetImages.length ? sheetImages : images.all);
     floating = true;
   }
-  if (!selected) {
+  return { selected, floating, hasImages: true };
+}
+
+function renderImagePreview(preview, caption, selection) {
+  if (!preview) return;
+  preview.innerHTML = '';
+  if (caption) caption.textContent = '';
+  if (!selection?.hasImages || !selection.selected) {
     preview.innerHTML = '<p class="muted">В файле нет изображений</p>';
     return;
   }
+  const { selected, floating } = selection;
   const img = document.createElement('img');
   img.src = selected.src;
   img.alt = selected.anchor?.cellRef
@@ -434,6 +436,25 @@ function renderSheetImagePreview(sheetName) {
     note.textContent = 'Показана самая крупная';
     preview.appendChild(note);
   }
+}
+
+function renderSheetImagePreview(sheetName) {
+  const selection = getSelectedSheetImage(sheetName);
+  const targets = [
+    {
+      preview: document.getElementById('details-image-preview'),
+      caption: document.getElementById('details-image-caption'),
+    },
+    {
+      preview: document.getElementById('base-image-preview'),
+      caption: document.getElementById('base-image-caption'),
+    },
+  ];
+  targets.forEach(({ preview, caption }) => {
+    if (preview) {
+      renderImagePreview(preview, caption, selection);
+    }
+  });
 }
 
 function renderPreview(sheet) {
