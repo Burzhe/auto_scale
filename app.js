@@ -12,6 +12,7 @@ const state = {
   calcSummary: null,
   showCalcSources: false,
   sheetImages: null,
+  lastResultTotal: null,
 };
 
 function resetControl(control) {
@@ -104,6 +105,15 @@ function resetResultsUI() {
     toggleSourcesBtn.textContent = 'Показать источники';
   }
 
+  const adjustedRow = document.getElementById('price-adjusted-row');
+  if (adjustedRow) adjustedRow.classList.add('hidden');
+  const adjustedTotal = document.getElementById('price-total-adjusted');
+  if (adjustedTotal) adjustedTotal.textContent = '—';
+  const coeffTotal = document.getElementById('price-total-coefficient');
+  if (coeffTotal) coeffTotal.textContent = '—';
+  const coeffValidation = document.getElementById('price-coefficient');
+  if (coeffValidation) coeffValidation.textContent = '—';
+
   document.querySelectorAll('.tab').forEach((tab, index) => {
     tab.classList.toggle('active', index === 0);
   });
@@ -151,6 +161,7 @@ function resetAppState() {
   state.calcSummary = null;
   state.showCalcSources = false;
   state.sheetImages = null;
+  state.lastResultTotal = null;
 }
 
 function resetCalculation() {
@@ -785,6 +796,52 @@ function formatDimensions(dims) {
   return `${dims.width}×${dims.depth}×${dims.height}`;
 }
 
+function getFinalPriceInputValue() {
+  const input = document.getElementById('final-price-input');
+  if (!input || input.value === '') return null;
+  const value = Number(input.value);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+function getBaseTotalCost(spec) {
+  const baseValues = spec?.calcSummary?.baseValues || {};
+  const totalCost = Number.isFinite(baseValues.totalCost) ? baseValues.totalCost : spec?.baseCost;
+  return Number.isFinite(totalCost) ? Number(totalCost) : null;
+}
+
+function getPriceCoefficient() {
+  const finalPrice = getFinalPriceInputValue();
+  const baseTotal = getBaseTotalCost(state.originalSpec);
+  if (!finalPrice || !baseTotal) return null;
+  return finalPrice / baseTotal;
+}
+
+function updatePriceCoefficientDisplay() {
+  const coeff = getPriceCoefficient();
+  const coeffEl = document.getElementById('price-coefficient');
+  if (coeffEl) coeffEl.textContent = coeff ? coeff.toFixed(3) : '—';
+  return coeff;
+}
+
+function updateAdjustedPriceRow(baseTotal) {
+  const row = document.getElementById('price-adjusted-row');
+  const totalEl = document.getElementById('price-total-adjusted');
+  const coeffEl = document.getElementById('price-total-coefficient');
+  if (!row || !totalEl || !coeffEl) return;
+  const coeff = updatePriceCoefficientDisplay();
+  if (!coeff || !Number.isFinite(baseTotal)) {
+    row.classList.add('hidden');
+    totalEl.textContent = '—';
+    coeffEl.textContent = '—';
+    return;
+  }
+  const adjustedTotal = baseTotal * coeff;
+  row.classList.remove('hidden');
+  totalEl.textContent = formatNumber(adjustedTotal, '₽');
+  coeffEl.textContent = coeff.toFixed(3);
+}
+
 function calculateCorpusArea(parts) {
   return (parts || []).reduce((sum, part) => {
     if (!part.length_mm || !part.width_mm || !part.qty) return sum;
@@ -877,6 +934,7 @@ function renderValidationSummary(spec) {
   document.getElementById('validation-pack').textContent = formatNumber(baseValues.pack, '₽');
   document.getElementById('validation-labor').textContent = formatNumber(baseValues.labor, '₽');
   document.getElementById('validation-total').textContent = formatNumber(totalCost, '₽');
+  updatePriceCoefficientDisplay();
 
   const warningBox = document.getElementById('validation-warning');
   warningBox.innerHTML = '';
@@ -1118,13 +1176,16 @@ function renderResults(spec, weight, price, warnings, breakdown) {
     renderBaseSummary(state.originalSpec);
   }
 
+  const baseTotal = breakdown?.total ?? price;
+  state.lastResultTotal = baseTotal;
   document.getElementById('new-dims').textContent = formatDimensions(spec.dims);
   document.getElementById('new-weight').textContent = formatNumber(weight, 'кг');
   document.getElementById('new-price').textContent = formatNumber(price, '₽');
   document.getElementById('price-materials').textContent = formatNumber(breakdown?.materials, '₽');
   document.getElementById('price-hardware').textContent = formatNumber(breakdown?.hardware, '₽');
   document.getElementById('price-other').textContent = formatNumber(breakdown?.other, '₽');
-  document.getElementById('price-total').textContent = formatNumber(breakdown?.total ?? price, '₽');
+  document.getElementById('price-total').textContent = formatNumber(baseTotal, '₽');
+  updateAdjustedPriceRow(baseTotal);
 
   const warningsBox = document.getElementById('warnings');
   warningsBox.innerHTML = '';
@@ -1317,6 +1378,7 @@ function attachEventHandlers() {
     showScreen('results-screen');
     renderBaseSummary(state.originalSpec);
     renderValidationSummary(state.originalSpec);
+    updateAdjustedPriceRow(state.lastResultTotal);
   });
 
   document.getElementById('calculate-btn').addEventListener('click', () => {
@@ -1433,6 +1495,17 @@ function attachEventHandlers() {
       }
     });
   });
+
+  const finalPriceInput = document.getElementById('final-price-input');
+  if (finalPriceInput) {
+    finalPriceInput.addEventListener('input', () => {
+      if (state.lastResultTotal !== null && state.lastResultTotal !== undefined) {
+        updateAdjustedPriceRow(state.lastResultTotal);
+      } else {
+        updatePriceCoefficientDisplay();
+      }
+    });
+  }
 
   const toggleSourcesBtn = document.getElementById('calc-toggle-sources');
   if (toggleSourcesBtn) {
