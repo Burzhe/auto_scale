@@ -1,8 +1,6 @@
 import { state, COLUMN_LETTERS } from './state.js';
 import { calculatePrice, round2 } from './calculations.js';
 
-const XLSX = globalThis.XLSX;
-
 export function colIndexToLetter(index) {
   return COLUMN_LETTERS[index] || '';
 }

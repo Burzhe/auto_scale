@@ -37,8 +37,6 @@ import {
   loadTemplate,
 } from './ui.js';
 
-const XLSX = globalThis.XLSX;
-
 function getWorker() {
   if (state.worker) return state.worker;
   const workerSource = document.getElementById('worker-src').textContent;

@@ -14,8 +14,6 @@ import {
   normalizeCellRef,
 } from './excel.js';
 
-const XLSX = globalThis.XLSX;
-
 export function setUploadError(message) {
   const box = document.getElementById('upload-error');
   if (!box) return;
