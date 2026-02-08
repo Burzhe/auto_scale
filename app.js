@@ -527,6 +527,13 @@ function formatDimensions(dims) {
   return `${dims.width}×${dims.depth}×${dims.height}`;
 }
 
+function calculateCorpusArea(parts) {
+  return (parts || []).reduce((sum, part) => {
+    if (!part.length_mm || !part.width_mm || !part.qty) return sum;
+    return sum + (part.length_mm * part.width_mm * part.qty) / 1e6;
+  }, 0);
+}
+
 function buildOriginalIndex(items, keyFn) {
   return (items || []).reduce((acc, item) => {
     const key = keyFn(item);
@@ -764,11 +771,14 @@ function renderCalcBreakdown(spec) {
   if (!table) return;
   table.innerHTML = '';
   const breakdown = spec.calcSummary?.breakdown?.dsp;
+  const baseArea = state.originalSpec ? calculateCorpusArea(state.originalSpec.corpus || []) : null;
+  const newArea = calculateCorpusArea(spec.corpus || []);
+  const areaRatio = baseArea && baseArea > 0 ? newArea / baseArea : null;
   if (reasonBox) reasonBox.textContent = '';
   if (!breakdown || !breakdown.details || breakdown.details.length === 0) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.textContent = 'Разбор ДСП не найден.';
     row.appendChild(cell);
     table.appendChild(row);
@@ -786,7 +796,7 @@ function renderCalcBreakdown(spec) {
     toggleSourcesBtn.classList.remove('hidden');
     toggleSourcesBtn.textContent = state.showCalcSources ? 'Скрыть источники' : 'Показать источники';
   }
-  const headers = ['Деталь', 'Qty', 'Area (м²)', 'Cost (₽)', 'Источники'];
+  const headers = ['Деталь', 'Qty', 'Area (м²)', 'Area новая (м²)', 'Cost (₽)', 'Источники'];
   const headerRow = document.createElement('tr');
   headers.forEach((text) => {
     const th = document.createElement('th');
@@ -800,10 +810,15 @@ function renderCalcBreakdown(spec) {
     const sourceText = detail.sources
       ? `total: ${detail.sources.totalCell || '—'}; term: ${detail.sources.colTotalCell || '—'}; leaf: ${detail.sources.leafCell || '—'}`
       : '';
+    const baseAreaValue = detail.area_m2 ? round2(detail.area_m2) : '';
+    const newAreaValue = areaRatio && detail.area_m2
+      ? round2(detail.area_m2 * areaRatio)
+      : '';
     const values = [
       detail.name,
       detail.qty ?? '',
-      detail.area_m2 ? round2(detail.area_m2) : '',
+      baseAreaValue,
+      newAreaValue,
       detail.cost_rub ?? detail.cost ?? '',
       state.showCalcSources ? sourceText : '—',
     ];

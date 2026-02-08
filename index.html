@@ -815,25 +815,156 @@
       }, 0);
     }
 
-    function recalculateFurniture(spec, baseValues, mapping, workbook) {
-      const furniture = Array.isArray(spec?.furniture) ? spec.furniture : [];
-      const hwImp = Number(baseValues?.hwImp || 0);
-      const hwRep = Number(baseValues?.hwRep || 0);
+    function petalsPerFacade(heightMm) {
+      if (heightMm <= 900) return 2;
+      if (heightMm <= 1400) return 3;
+      if (heightMm <= 1900) return 4;
+      if (heightMm <= 2400) return 5;
+      if (heightMm <= 2800) return 7;
+      return 8;
+    }
 
-      if (Array.isArray(furniture) && furniture.length) {
-        let imp = 0;
-        let rep = 0;
-        for (const row of furniture) {
-          const s = Number(row.sum || 0);
-          if (row.origin === 0) imp += s;
-          if (row.origin === 1) rep += s;
-        }
-        if (imp + rep > 0) {
-          return { furniture, hwImp: imp, hwRep: rep, warnings: [] };
-        }
+    function recalculateFurniture(spec, baseValues, corpusResult, newHeight, newWidth) {
+      const baseFurniture = Array.isArray(spec?.furniture) ? spec.furniture : [];
+      const baseHwImp = Number(baseValues?.hwImp || 0);
+      const baseHwRep = Number(baseValues?.hwRep || 0);
+      const warnings = [];
+
+      const oldSectionCount = inferSectionCount(spec);
+      const newSectionCount = corpusResult?.sectionCount || oldSectionCount || 1;
+      const originalSections = distributeEvenly((spec.dims && spec.dims.width) || 0, Math.max(oldSectionCount, 1));
+      const newSections = distributeEvenly(newWidth || (spec.dims && spec.dims.width) || 0, Math.max(newSectionCount, 1));
+      const oldSpans = originalSections.reduce((sum, width) => sum + calcSpansForSection(width), 0);
+      const newSpans = newSections.reduce((sum, width) => sum + calcSpansForSection(width), 0);
+      const spanRatio = oldSpans > 0 ? newSpans / oldSpans : 1;
+      const sectionRatio = oldSectionCount > 0 ? newSectionCount / oldSectionCount : 1;
+
+      const oldShelves = (spec.corpus || []).reduce((sum, part) => {
+        return inferPartType(part.name) === 'shelf' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const newShelves = Number.isFinite(corpusResult?.totalShelves) ? corpusResult.totalShelves : 0;
+      if (!oldShelves || !newShelves) {
+        warnings.push('⚠️ Недостаточно данных по полкам — пересчёт по пролётам.');
       }
 
-      return { furniture, hwImp, hwRep, warnings: [] };
+      const oldFacades = (spec.corpus || []).reduce((sum, part) => {
+        return inferPartType(part.name) === 'facade' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const newFacades = (corpusResult?.corpus || []).reduce((sum, part) => {
+        return inferPartType(part.name) === 'facade' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const facadeTemplate = (spec.corpus || []).find((part) => inferPartType(part.name) === 'facade');
+      const facadeHeight = facadeTemplate?.length_mm || newHeight || (spec.dims && spec.dims.height) || 0;
+      const petals = petalsPerFacade(facadeHeight || 0);
+
+      const oldDrawers = (spec.corpus || []).reduce((sum, part) => {
+        return inferPartType(part.name) === 'drawer' ? sum + (part.qty || 0) : sum;
+      }, 0);
+      const handlesDrawerQty = oldDrawers ? Math.ceil(oldDrawers * sectionRatio) : 0;
+
+      let totalLedPower = 0;
+      let totalLedLength = 0;
+      const totalSpanWidth = newSections.reduce((sum, width) => sum + width, 0);
+      const spanWidth = newSpans ? totalSpanWidth / newSpans : 0;
+      let handleDrawerWarningAdded = false;
+
+      const furniture = [];
+      if (baseFurniture.length) {
+        baseFurniture.forEach((item) => {
+          const nameLow = String(item.name || '').toLowerCase();
+          const baseQty = Number(item.qty || 0);
+          let newQty = baseQty;
+          if (item.unit !== '%') {
+            if (nameLow.includes('петл') || nameLow.includes('чашк') || (nameLow.includes('заглушка') && nameLow.includes('петл'))) {
+              newQty = newFacades * petals;
+            } else if (nameLow.includes('ручк')) {
+              newQty = newFacades + handlesDrawerQty;
+              if (oldDrawers && handlesDrawerQty && !handleDrawerWarningAdded) {
+                warnings.push(`ℹ️ Ручки: учтены ящики ${oldDrawers}→${handlesDrawerQty} (коэф. секций ${sectionRatio.toFixed(2)})`);
+                handleDrawerWarningAdded = true;
+              }
+            } else if (nameLow.includes('полкодерж')) {
+              if (oldShelves > 0 && newShelves > 0) {
+                const supportsPerShelf = baseQty / oldShelves;
+                newQty = supportsPerShelf * newShelves;
+              } else {
+                newQty *= spanRatio;
+              }
+            } else if (nameLow.includes('стяжка межсекцион')) {
+              const stiazkiPerConnection = Math.max(1, Math.ceil((newHeight || spec.dims?.height || 0) / 700));
+              newQty = newSectionCount > 1 ? (newSectionCount - 1) * stiazkiPerConnection : 0;
+            } else if (nameLow.includes('корректор фасада')) {
+              newQty = newFacades;
+            } else if (nameLow.includes('винт') || nameLow.includes('ключ')) {
+              newQty = baseQty ? Math.ceil(baseQty) : 2;
+            } else if (nameLow.includes('штанг')) {
+              if (!baseQty) {
+                newQty = 0;
+              } else {
+                const rodsPerOriginalSection = baseQty / Math.max(oldSectionCount, 1);
+                newQty = newSectionCount * Math.ceil(rodsPerOriginalSection);
+              }
+            } else if (nameLow.includes('подсветк') || nameLow.includes('led') || nameLow.includes('освещен')) {
+              newQty *= spanRatio;
+              const ledLengthMm = Math.max(Math.round(spanWidth - 100), 0);
+              const totalLength = (ledLengthMm / 1000) * newQty;
+              const power = totalLength * 10;
+              totalLedPower += power;
+              totalLedLength += totalLength;
+            } else {
+              newQty *= spanRatio;
+            }
+          }
+
+          const roundedQty = Math.ceil(newQty);
+          const coef = Number(item.coef || 1);
+          const price = Number(item.price || 0);
+          const sum = item.unit === '%' ? Number(item.sum || 0) : round2(roundedQty * price * coef);
+          furniture.push({
+            ...item,
+            qty: roundedQty,
+            unit: item.unit || 'шт',
+            sum,
+          });
+        });
+      } else {
+        const hingeCount = newFacades * petals;
+        const handleCount = newFacades + handlesDrawerQty;
+        const shelfHolderCount = newShelves * 4;
+        const tieCount = Math.max(newSectionCount - 1, 0) * 6;
+        const ledCount = newSpans;
+        const add = (name, qty, unit = 'шт', price = 0) => {
+          furniture.push({ name, qty, unit, price, sum: round2(qty * price) });
+        };
+        add('Петля', hingeCount);
+        add('Ручка', handleCount);
+        add('Полкодержатель', shelfHolderCount);
+        add('Стяжка', tieCount);
+        add('LED подсветка', ledCount);
+      }
+
+      if (totalLedPower > 50) {
+        warnings.push('⚠️ LED: Нужен доп. блок (мощность > 50 Вт)');
+      }
+      if (totalLedLength > 0) {
+        const blocksNeeded = Math.ceil(totalLedLength / 5);
+        warnings.push(`ℹ️ LED: Блок питания x${blocksNeeded}, ≥${Math.round(totalLedPower * 1.2 * 10) / 10} Вт`);
+      }
+
+      let imp = 0;
+      let rep = 0;
+      furniture.forEach((row) => {
+        const s = Number(row.sum || 0);
+        if (row.origin === 0) imp += s;
+        if (row.origin === 1) rep += s;
+      });
+      const useTotals = imp + rep > 0;
+      return {
+        furniture,
+        hwImp: useTotals ? imp : baseHwImp,
+        hwRep: useTotals ? rep : baseHwRep,
+        warnings,
+      };
     }
 
 function calculateDspCostFromRates(parts, rateInfo) {
@@ -866,7 +997,7 @@ function calculateDspCostFromRates(parts, rateInfo) {
         const corpusResult = recalculateCorpus(spec, newWidth, newDepth, newHeight, overrides, enforceRules);
         const calcSummary = spec.calcSummary || {};
         const baseValues = calcSummary.baseValues || {};
-        const furnitureResult = recalculateFurniture(spec, baseValues);
+        const furnitureResult = recalculateFurniture(spec, baseValues, corpusResult, newHeight, newWidth);
         const updatedSpec = {
           ...spec,
           corpus: corpusResult.corpus,
