@@ -950,14 +950,15 @@ function parseFurniture(sheet, mapping) {
     const name = rowData[columns.name];
     if (!code && !name) {
       emptyRows += 1;
-      if (emptyRows >= 5) break;
+      if (hasTemplateHeader || emptyRows >= 5) break;
       continue;
     }
     emptyRows = 0;
     const coef = parseNumericValue(rowData[columns.coef]) || 1;
     const qty = parseNumericValue(rowData[columns.qty]) || 0;
     const unit = rowData[columns.unit] || 'шт';
-    const origin = Number(parseNumericValue(rowData[columns.origin]));
+    const originRaw = parseNumericValue(rowData[columns.origin]);
+    const origin = Number.isFinite(originRaw) ? originRaw : null;
     const price = parseNumericValue(rowData[columns.priceUpdated])
       ?? parseNumericValue(rowData[columns.priceCurrent])
       ?? 0;
@@ -974,6 +975,17 @@ function parseFurniture(sheet, mapping) {
     });
   }
   return items;
+}
+
+function findFurnitureSheetName(workbook, preferredName) {
+  if (preferredName && workbook.Sheets[preferredName]) return preferredName;
+  for (const sheetName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) continue;
+    const json = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false });
+    if (findFurnitureHeaderRow(json)) return sheetName;
+  }
+  return preferredName || null;
 }
 
 function extractThickness(value) {
@@ -1092,7 +1104,8 @@ function parseExcelWithMapping(workbook, mapping) {
   const sheet = workbook.Sheets[state.activeSheet];
   const materials = parseMaterialDictionary(sheet, mapping);
   const corpus = parseCorpusDetails(sheet, mapping, materials);
-  const furnitureSheet = workbook.Sheets[mapping.furnitureSheet];
+  const furnitureSheetName = findFurnitureSheetName(workbook, mapping.furnitureSheet);
+  const furnitureSheet = furnitureSheetName ? workbook.Sheets[furnitureSheetName] : null;
   const furniture = parseFurniture(furnitureSheet, mapping);
   const dims = parseDimensions(sheet, mapping);
   const anchors = resolveAnchors(state.calcSummary?.anchors, mapping.anchorOverrides);
