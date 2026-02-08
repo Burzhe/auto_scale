@@ -829,6 +829,7 @@
       const baseHwImp = Number(baseValues?.hwImp || 0);
       const baseHwRep = Number(baseValues?.hwRep || 0);
       const warnings = [];
+      const priceWarnings = new Set();
 
       const oldSectionCount = inferSectionCount(spec);
       const newSectionCount = corpusResult?.sectionCount || oldSectionCount || 1;
@@ -874,6 +875,15 @@
           const nameLow = String(item.name || '').toLowerCase();
           const baseQty = Number(item.qty || 0);
           let newQty = baseQty;
+          if (item.priceDerivedFromSum && baseQty > 0) {
+            const label = item.name || item.code || 'позиция';
+            const col = item.priceDerivedFromSumColumn || 'J';
+            const msg = `⚠️ Фурнитура: цена "${label}" рассчитана из суммы ${col} / кол-во.`;
+            if (!priceWarnings.has(msg)) {
+              warnings.push(msg);
+              priceWarnings.add(msg);
+            }
+          }
           if (item.unit !== '%') {
             if (nameLow.includes('петл') || nameLow.includes('чашк') || (nameLow.includes('заглушка') && nameLow.includes('петл'))) {
               newQty = newFacades * petals;
