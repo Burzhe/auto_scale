@@ -959,10 +959,24 @@ function parseFurniture(sheet, mapping) {
     const unit = rowData[columns.unit] || 'шт';
     const originRaw = parseNumericValue(rowData[columns.origin]);
     const origin = Number.isFinite(originRaw) ? originRaw : null;
-    const price = parseNumericValue(rowData[columns.priceUpdated])
-      ?? parseNumericValue(rowData[columns.priceCurrent])
-      ?? 0;
-    const sum = parseNumericValue(rowData[columns.sum]) ?? qty * price * coef;
+    const basePrice = parseNumericValue(rowData[columns.priceUpdated])
+      ?? parseNumericValue(rowData[columns.priceCurrent]);
+    const sumCell = columns.sum != null ? parseNumericValue(rowData[columns.sum]) : null;
+    const sumFromJ = parseNumericValue(rowData[9]);
+    const sumValue = Number.isFinite(sumCell)
+      ? sumCell
+      : (Number.isFinite(sumFromJ) ? sumFromJ : null);
+    const sumColumnIndex = Number.isFinite(sumCell) ? columns.sum : (Number.isFinite(sumFromJ) ? 9 : null);
+    let price = Number.isFinite(basePrice) ? basePrice : 0;
+    let priceDerivedFromSum = false;
+    if ((!price || !Number.isFinite(price)) && qty > 0 && Number.isFinite(sumValue) && sumValue > 0) {
+      const denom = qty * (Number(coef) || 1);
+      if (denom > 0) {
+        price = sumValue / denom;
+        priceDerivedFromSum = true;
+      }
+    }
+    const sum = Number.isFinite(sumValue) ? sumValue : qty * price * coef;
     items.push({
       code,
       name,
@@ -972,6 +986,8 @@ function parseFurniture(sheet, mapping) {
       price,
       sum,
       coef,
+      priceDerivedFromSum,
+      priceDerivedFromSumColumn: priceDerivedFromSum && sumColumnIndex != null ? colIndexToLetter(sumColumnIndex) : null,
     });
   }
   return items;
